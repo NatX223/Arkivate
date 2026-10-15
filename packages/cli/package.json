@@ -1,0 +1,14 @@
+{
+  "name": "@arkivate/cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "arkivate": "./src/index.ts"
+  },
+  "dependencies": {
+    "@arkivate/core": "workspace:^",
+    "commander": "^15.0.0"
+  }
+}
