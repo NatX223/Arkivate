@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "cond": {
+    "type": "on_silence",
+    "where": [
+      ["eq", "project", { "str": "arkivate" }],
+      ["eq", "entity_type", { "str": "demo_feed" }],
+      ["eq", "kind", { "str": "heartbeat" }]
+    ],
+    "created_by": "0xa81415E8Fa827099BbEb5eA11199533D2e2967eA",
+    "silence_blocks": 60
+  },
+  "action": { "type": "notice" }
+}

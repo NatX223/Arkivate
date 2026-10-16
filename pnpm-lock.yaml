@@ -26,12 +26,18 @@ importers:
 
   backend/cli:
     dependencies:
+      '@arkiv-network/sdk':
+        specifier: 0.8.1
+        version: 0.8.1(typescript@5.9.3)(viem@2.56.3(typescript@5.9.3)(zod@4.6.7))
       '@arkivate/core':
         specifier: workspace:^
         version: link:../core
       commander:
         specifier: ^15.0.0
         version: 15.0.0
+      viem:
+        specifier: 2.56.3
+        version: 2.56.3(typescript@5.9.3)(zod@4.6.7)
 
   backend/core:
     dependencies:
@@ -65,6 +71,9 @@ importers:
 
   backend/worker:
     dependencies:
+      '@arkiv-network/sdk':
+        specifier: 0.8.1
+        version: 0.8.1(typescript@5.9.3)(viem@2.56.3(typescript@5.9.3)(zod@4.6.7))
       '@arkivate/core':
         specifier: workspace:^
         version: link:../core
@@ -80,6 +89,9 @@ importers:
       tsx:
         specifier: ^4.23.15
         version: 4.23.15
+      viem:
+        specifier: 2.56.3
+        version: 2.56.3(typescript@5.9.3)(zod@4.6.7)
     devDependencies:
       '@types/express':
         specifier: ^5.0.6

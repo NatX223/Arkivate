@@ -8,7 +8,9 @@
     "arkivate": "./src/index.ts"
   },
   "dependencies": {
+    "@arkiv-network/sdk": "0.8.1",
     "@arkivate/core": "workspace:^",
-    "commander": "^15.0.0"
+    "commander": "^15.0.0",
+    "viem": "2.56.3"
   }
 }
