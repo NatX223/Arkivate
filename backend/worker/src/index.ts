@@ -105,6 +105,8 @@ async function main() {
     }),
   );
   app.get("/health", (_req, res) => {
+    // Public status only: the web app's Workers page reads it straight from the browser.
+    res.setHeader("access-control-allow-origin", "*");
     res.json({
       ok: true,
       name: env.WORKER_NAME,

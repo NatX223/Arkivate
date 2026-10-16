@@ -46,7 +46,7 @@ Arkivate/                     ← root: shared config only
 
 | What | Where | How |
 |---|---|---|
-| Frontend | Vercel | Root Directory = `frontend` |
+| Frontend | Vercel | Root Directory = `frontend`; env `ARKIV_ACCESS_KEY` (server-only, used by the `/api/rpc` read proxy) |
 | Worker A | GCP Cloud Run | `cloudbuild.yaml` + `backend/worker/Dockerfile` (cloud build), GCS volume for `data/` |
 | Worker B | GCP Cloud Run (other region) or another provider | Same image, different `WORKER_PRIVATE_KEY` / `WORKER_NAME` / `PUBLIC_ENDPOINT` |
 

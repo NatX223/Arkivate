@@ -177,3 +177,12 @@ Tooling: pnpm 9.15.9 · TypeScript 5.9.3 · Windows 11 (Git Bash)
 - **Repro:** Two sealed jobs with the same spec, one matching event, then compare their receipts' `epoch` attributes.
 - **Workaround:** Mix the job's secret salt in: `epoch = keccak256(salt ‖ raw_epoch)` and `result_hash = keccak256(epoch ‖ matched_key)`. Re-tested live: same spec, same event → different epochs, and `verify` still recomputes them after a reveal.
 - **Suggestion:** Arkiv's privacy guidance could say plainly: "anything you hash on-chain can be brute-forced if its inputs are public or guessable; always add a secret salt". The hackathon rules already ban hashed personal data; the same reasoning applies to app data.
+
+## F18 — (local tooling, not Arkiv) Next.js Turbopack can't import a workspace package written as ESM TypeScript
+- **When:** 2026-10-16 (web app)
+- **What I did:** `next dev --turbopack` with `transpilePackages: ["@arkivate/core"]`. Core is NodeNext TypeScript, so its imports end in `.js` (`export * from "./commit.js"`), the form `tsx` and `tsc` require.
+- **Expected:** The bundler resolves `./commit.js` to `./commit.ts`, as `tsc`, `tsx` and Vitest do.
+- **Actual:** `Module not found: Can't resolve './commit.js'` for every re-export, then `The module has no exports at all`. Turbopack has no equivalent of webpack's `resolve.extensionAlias`.
+- **Repro:** Any pnpm workspace package with `.js`-suffixed relative imports in `.ts` files, imported from a Next 15.5 app with `--turbopack`.
+- **Workaround:** Build the web app with webpack (`next dev` / `next build` without `--turbopack`) and set `config.resolve.extensionAlias = { ".js": [".ts", ".tsx", ".js"] }` in `next.config.ts`.
+- **Suggestion:** Not Arkiv's to fix. But an Arkiv starter that pairs a shared TS package with a Next.js front end would hit this on day one; the Arkiv templates could ship with the webpack alias already set.
