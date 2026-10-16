@@ -14,9 +14,9 @@ Network: Tiramisu (chain ID 7738577). Attribute builders live in
 | `trigger` | trigger owner | trigger owner | `permissionlessExtension` | owner picks (default 7 days) | ✅ shipped |
 | `receipt` | worker wallet | **`0x…dEaD`** (burned) | `readonly` + `permissionlessExtension` | 30 days | ✅ shipped (public mode) |
 | `demo_feed` | demo wallet (owner) | demo wallet | `listing`: `permissionlessExtension` | `--ttl` minutes, or `--blocks` for listing/canary | ✅ shipped |
-| `sealed` | fresh owner wallet | owner | `readonly` | spec life + dispute window | phase 2 |
-| `acceptance` | worker wallet | **`0x…dEaD`** | `readonly` + `permissionlessExtension` | 30 days | phase 2 |
-| `reveal` | sealed's creator | **`0x…dEaD`** | `readonly` | 30 days | phase 2 |
+| `sealed` | fresh owner wallet | owner | `readonly` | job lifetime (`--days`, default 7) | ✅ shipped |
+| `acceptance` | worker wallet | **`0x…dEaD`** | `readonly` + `permissionlessExtension` | 30 days | ✅ shipped |
+| `reveal` | sealed's creator | **`0x…dEaD`** | `readonly` | 30 days | ✅ shipped |
 
 Burned = created and transferred to `0x000000000000000000000000000000000000dEaD` in the same atomic
 `executeBatch`, so nobody (including its creator) can ever delete or modify it.
@@ -153,13 +153,70 @@ Payload: `{ "kind": "event", "seq": 1, "synthetic": true }`.
 
 ## sealed
 
-_Phase 2._ Commitment `keccak256(canonical_json(spec) ‖ salt32)` plus the chosen worker's address.
-No payload.
+A private trigger's public footprint: a commitment and the chosen worker. Created from a fresh
+`sealed_owner` wallet, so it isn't linked to the owner's other activity.
+
+| Attribute | Type | Example |
+|---|---|---|
+| `project` | str | `arkivate` |
+| `entity_type` | str | `sealed` |
+| `commitment` | bytes32 | `keccak256(canonical_json(spec) ‖ salt32)` |
+| `worker` | addr | the worker chosen to run it |
+| `created_at` | u64 | ms since epoch |
+
+No payload (empty). Flags `readonly`; the owner keeps it. Its lifetime is how long the job runs
+(`seal --days`, default 7). The spec is the RFC 8785 canonical JSON of the **normalized** spec
+(condition, watch, action type and params). The destination is never part of it.
 
 ## acceptance
 
-_Phase 2._ A worker's burned promise to run a sealed job.
+A worker's promise to run one sealed job, written after a valid private hand-off (`POST /sealed`).
+Burned in the same batch as its creation, so the worker can never withdraw it to escape a dispute.
+
+| Attribute | Type | Example |
+|---|---|---|
+| `project` | str | `arkivate` |
+| `entity_type` | str | `acceptance` |
+| `sealed` | key | the sealed entity |
+| `commitment` | bytes32 | copied from the sealed entity |
+| `sealed_creator` | addr | the sealed entity's creator |
+| `accepted_block` | u64 | the job's conditions count from here |
+
+No payload. `readonly` + `permissionlessExtension`, owner `0x…dEaD`, 30 days. `commitment` and
+`sealed_creator` are duplicated here on purpose: a dispute can still be verified after the `sealed`
+entity has expired.
+
+## receipt (sealed mode)
+
+Same entity type as public receipts, with `mode = "sealed"` and `trigger` = the sealed key. To
+avoid revealing what matched:
+
+- `epoch` = `keccak256(salt ‖ raw_epoch)`, not the raw `create:<matched_key>`. An unsalted hash
+  can be brute-forced over public entity keys (two sealed jobs on the same event produced
+  identical unsalted epochs in our tests), so the job's secret salt is mixed in. The worker and,
+  after a reveal, any verifier can recompute it.
+- Payload: only `{ "result_hash": keccak256(epoch ‖ matched_key) }`.
+- No `subject` / `outcome` attributes.
+
+`evidence_block` remains, so an observer learns *when* a sealed trigger fired, though not *what* it
+watched.
 
 ## reveal
 
-_Phase 2._ `{ spec, salt }`, burned, published only to open a dispute.
+Published only to open a dispute. Burned, so it can't be withdrawn either.
+
+| Attribute | Type | Example |
+|---|---|---|
+| `project` | str | `arkivate` |
+| `entity_type` | str | `reveal` |
+| `sealed` | key | the sealed entity |
+
+Payload: `{ "spec": { … }, "salt": "0x…" }`. Must be created by the sealed entity's creator
+(checked via `$creator`). `readonly`, owner `0x…dEaD`, 30 days.
+
+## Never on Arkiv
+
+Webhook URLs, Telegram chat IDs, the destination digest that the hand-off signature covers, sealed
+specs before reveal, private keys, access keys. Our Phase 2 test scanned every live
+`project = arkivate` entity (attributes and payloads, plain and hex) for the test destinations and
+their digests: 0 hits.

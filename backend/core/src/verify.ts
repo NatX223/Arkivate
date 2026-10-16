@@ -196,7 +196,7 @@ export async function verifySealed(
   const open: ConditionHit[] = [];
   const found: Record<string, string> = {};
   for (const h of ev.hits) {
-    const want = lower(sealedEpoch(h.epoch));
+    const want = lower(sealedEpoch(opening.salt, h.epoch));
     const r = receipts.find((x) => lower(x.epoch) === want && x.firedBlock <= h.metBlock + GRACE_BLOCKS);
     if (r) found[short(h.epoch)] = `${r.key} fired @ block ${r.firedBlock}`;
     else if (head <= h.metBlock + GRACE_BLOCKS) open.push(h);
@@ -208,7 +208,7 @@ export async function verifySealed(
       ok: false,
       detail: `${missing.length} hit(s) with no receipt from ${base.worker} within ${GRACE_BLOCKS} blocks: provable censorship`,
       evidence: Object.fromEntries(
-        missing.map((h, i) => [`skipped_${i + 1}`, `${h.epoch} met @ ${h.metBlock}, deadline ${h.metBlock + GRACE_BLOCKS}, sealed epoch ${sealedEpoch(h.epoch)}`]),
+        missing.map((h, i) => [`skipped_${i + 1}`, `${h.epoch} met @ ${h.metBlock}, deadline ${h.metBlock + GRACE_BLOCKS}, sealed epoch ${sealedEpoch(opening.salt, h.epoch)}`]),
       ),
     });
     return done("SKIPPED");

@@ -303,8 +303,10 @@ export class Engine {
     const id = firedId(t.key, f.epoch);
     if (this.o.store.data.fired[id] || this.inflight.has(id) || this.dryFired.has(id)) return;
     const sealed = t.mode === "sealed";
-    // Sealed receipts carry a hashed epoch: the raw one would say what matched.
-    const epoch = sealed ? sealedEpoch(f.epoch) : f.epoch;
+    const job = sealed ? this.o.store.data.sealed[t.key] : undefined;
+    if (sealed && !job) return;
+    // Sealed receipts carry a salted, hashed epoch: the raw one would say what matched.
+    const epoch = job ? sealedEpoch(job.salt, f.epoch) : f.epoch;
     if (sealed && this.o.skipSealed) {
       if (!this.dryFired.has(id)) {
         this.dryFired.add(id);
@@ -357,7 +359,7 @@ export class Engine {
 
       const head = await this.o.reader.getBlockNumber();
       if (sealed) {
-        await this.fireSealed(t, f, id, sealedEpoch(f.epoch), head, writer, log);
+        await this.fireSealed(t, f, id, sealedEpoch(job!.salt, f.epoch), head, writer, log);
         return;
       }
       const summary = plan ? `${plan.outcome}: ${f.summary}` : f.summary;
@@ -425,7 +427,7 @@ export class Engine {
     }
     const receipt = await writer.writeReceipt(
       { trigger: t.key, mode: "sealed", epoch, firedBlock: head, evidenceBlock: f.evidenceBlock },
-      { result_hash: resultHash(f.epoch, f.matchedKeys[0]) },
+      { result_hash: resultHash(job.salt, f.epoch, f.matchedKeys[0]) },
     );
     this.recent.get(t.key)?.push(Date.now());
     this.stats.firedSelf++;

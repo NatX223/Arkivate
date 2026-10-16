@@ -39,6 +39,16 @@ describe("commitment + salt", () => {
   });
 });
 
+describe("sealed epoch privacy", () => {
+  it("differs across jobs for the same matched entity (salted), and is stable per job", () => {
+    const epoch = `create:${MATCH}`;
+    const a = randomSalt();
+    const b = randomSalt();
+    expect(sealedEpoch(a, epoch)).not.toBe(sealedEpoch(b, epoch));
+    expect(sealedEpoch(a, epoch)).toBe(sealedEpoch(a, epoch));
+  });
+});
+
 describe("hand-off signature (EIP-191)", () => {
   it("recovers the signer, and binds the destination", async () => {
     const account = privateKeyToAccount(generatePrivateKey());
@@ -63,7 +73,8 @@ function setup(over: Partial<{
   acceptances: AcceptanceRecord[];
   reveal: { spec: unknown; salt: Hex } | undefined;
   evaluation: Evaluation;
-  receipts: SealedReceiptRecord[];
+  /** Receipts by raw epoch + fired block; hashed with this job's salt inside. */
+  receipts: [string, bigint][];
 }> = {}) {
   const salt = randomSalt();
   const commitment = commit(spec, salt);
@@ -73,8 +84,8 @@ function setup(over: Partial<{
     acceptances: [{ key: `0x${"33".repeat(32)}` as Hex, creator: WORKER, commitment, sealedCreator: OWNER, acceptedBlock: 100n }],
     reveal: { spec, salt } as { spec: unknown; salt: Hex } | undefined,
     evaluation: { status: "met", hits: [{ epoch: `create:${MATCH}`, metBlock: 200n, matchedKey: MATCH }], detail: "1 match" } as Evaluation,
-    receipts: [] as SealedReceiptRecord[],
     ...over,
+    receipts: (over.receipts ?? []).map(([e, b]) => receiptFor(salt, e, b)),
   };
   const reads: VerifyReads = {
     head: async () => d.head,
@@ -87,12 +98,9 @@ function setup(over: Partial<{
   return { reads, commitment, salt };
 }
 
-const receiptFor = (epoch: string, firedBlock: bigint): SealedReceiptRecord => ({
-  key: `0x${"55".repeat(32)}` as Hex,
-  creator: WORKER,
-  epoch: sealedEpoch(epoch),
-  firedBlock,
-});
+function receiptFor(salt: Hex, epoch: string, firedBlock: bigint): SealedReceiptRecord {
+  return { key: `0x${"55".repeat(32)}` as Hex, creator: WORKER, epoch: sealedEpoch(salt, epoch), firedBlock };
+}
 
 describe("verifySealed", () => {
   it("NOT_FOUND without a sealed entity or acceptance", async () => {
@@ -134,7 +142,7 @@ describe("verifySealed", () => {
   });
 
   it("FIRED with a receipt from the worker inside the grace window", async () => {
-    const { reads } = setup({ receipts: [receiptFor(`create:${MATCH}`, 205n)] });
+    const { reads } = setup({ receipts: [[`create:${MATCH}`, 205n]] });
     const r = await verifySealed(SEALED, reads);
     expect(r.verdict).toBe("FIRED");
     expect(r.steps.map((s) => s.ok)).toEqual([true, true, true, true, true]);
@@ -146,7 +154,7 @@ describe("verifySealed", () => {
   });
 
   it("SKIPPED when the only receipt is too late", async () => {
-    const { reads } = setup({ receipts: [receiptFor(`create:${MATCH}`, 200n + GRACE_BLOCKS + 1n)] });
+    const { reads } = setup({ receipts: [[`create:${MATCH}`, 200n + GRACE_BLOCKS + 1n]] });
     expect((await verifySealed(SEALED, reads)).verdict).toBe("SKIPPED");
   });
 
@@ -156,14 +164,14 @@ describe("verifySealed", () => {
   });
 
   it("falls back to the acceptance once the sealed entity has expired", async () => {
-    const { reads } = setup({ sealed: undefined, receipts: [receiptFor(`create:${MATCH}`, 201n)] });
+    const { reads } = setup({ sealed: undefined, receipts: [[`create:${MATCH}`, 201n]] });
     const r = await verifySealed(SEALED, reads);
     expect(r.verdict).toBe("FIRED");
     expect(r.steps[0]!.detail).toMatch(/acceptance/);
   });
 
   it("emits re-check commands for every read it made", async () => {
-    const { reads } = setup({ receipts: [receiptFor(`create:${MATCH}`, 205n)] });
+    const { reads } = setup({ receipts: [[`create:${MATCH}`, 205n]] });
     const r = await verifySealed(SEALED, reads);
     expect(r.recheck.length).toBeGreaterThanOrEqual(4);
     expect(r.recheck[0]).toMatch(/^curl -s https:\/\/rpc\.tiramisu/);

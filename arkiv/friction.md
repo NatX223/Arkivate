@@ -159,3 +159,21 @@ Tooling: pnpm 9.15.9 · TypeScript 5.9.3 · Windows 11 (Git Bash)
 - **Repro:** Time `await wallet.createEntity(...)` in a loop on Tiramisu.
 - **Workaround:** 12 s per-rank dedupe slots; we recommend `lead_blocks ≥ 20` for Reactivate so an extension lands well before the deadline.
 - **Suggestion:** Publish expected inclusion latency for Tiramisu, and say whether the SDK's receipt wait adds polling delay (the default poll interval may be part of the spread).
+
+## F16 — Entities with nothing to store still need a payload and a content type
+- **When:** 2026-10-16 ~15:30 BST (Phase 2, sealed triggers)
+- **What I did:** Created the `sealed` and `acceptance` entities. All their meaning is in attributes (commitment, worker, block); there is no body.
+- **Expected:** `payload` / `contentType` optional for attribute-only entities.
+- **Actual:** `CreateEntityParameters` requires both (`payload: Uint8Array`, `contentType: MimeType | string`). Passing `new Uint8Array()` with `"application/octet-stream"` works on Tiramisu, but nothing documents that an empty payload is allowed, and the type suggests it isn't optional.
+- **Repro:** `createEntity({ attributes, expires })` → TS error: property `payload` is missing.
+- **Workaround:** `payload: new Uint8Array(), contentType: "application/octet-stream"`.
+- **Suggestion:** Make `payload` / `contentType` optional (default empty / `application/octet-stream`), or document that empty payloads are fine.
+
+## F17 — (our design; worth a line in Arkiv's privacy docs) Hashes of public data aren't private on Arkiv
+- **When:** 2026-10-16 ~15:40 BST
+- **What I did:** For sealed receipts we published `epoch = keccak256("create:" + matched_entity_key)` instead of the raw epoch, to hide which entity matched.
+- **Expected:** An observer can't tell what a sealed trigger watches.
+- **Actual:** Two different sealed jobs on the same event produced **identical** epochs and result hashes on-chain. Every entity key is public and enumerable via `arkiv_query`, so anyone can hash `"create:" + key` for each entity created near `evidence_block` and recover the match. Arkiv's openness makes every hash of public, low-entropy data reversible.
+- **Repro:** Two sealed jobs with the same spec, one matching event, then compare their receipts' `epoch` attributes.
+- **Workaround:** Mix the job's secret salt in: `epoch = keccak256(salt ‖ raw_epoch)` and `result_hash = keccak256(epoch ‖ matched_key)`. Re-tested live: same spec, same event → different epochs, and `verify` still recomputes them after a reveal.
+- **Suggestion:** Arkiv's privacy guidance could say plainly: "anything you hash on-chain can be brute-forced if its inputs are public or guessable; always add a secret salt". The hackathon rules already ban hashed personal data; the same reasoning applies to app data.

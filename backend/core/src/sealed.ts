@@ -51,15 +51,19 @@ export function handoffMessage(p: {
 }
 
 /**
- * On-chain epoch of a sealed receipt. The raw epoch (e.g. `create:<matched_key>`) would reveal
- * which entity matched, and so the sealed intent; its hash is still stable for dedupe, and anyone
- * holding the revealed spec can recompute it.
+ * On-chain epoch of a sealed receipt: `keccak256(salt ‖ raw_epoch)`.
+ *
+ * The raw epoch (e.g. `create:<matched_key>`) would say which entity matched, and so the sealed
+ * intent. Hashing alone is not enough: entity keys are public, so `keccak("create:" + key)` can be
+ * brute-forced over every entity near `evidence_block` (we saw two sealed jobs produce identical
+ * epochs in testing). Mixing in the job's secret salt makes it opaque until the owner reveals, and
+ * the worker and any post-reveal verifier can still recompute it.
  */
-export const sealedEpoch = (rawEpoch: string): Hex => keccak256(stringToHex(rawEpoch));
+export const sealedEpoch = (salt: Hex, rawEpoch: string): Hex => keccak256(concat([salt, stringToHex(rawEpoch)]));
 
-/** Sealed receipt payload: `keccak(epoch ‖ matched_key)` — proves what fired without saying it. */
-export const resultHash = (rawEpoch: string, matchedKey?: Hex): Hex =>
-  keccak256(concat([stringToHex(rawEpoch), matchedKey ?? "0x"]));
+/** Sealed receipt payload: `keccak(sealed_epoch ‖ matched_key)`, salted for the same reason. */
+export const resultHash = (salt: Hex, rawEpoch: string, matchedKey?: Hex): Hex =>
+  keccak256(concat([sealedEpoch(salt, rawEpoch), matchedKey ?? "0x"]));
 
 export function sealedAttributes(commitment: Hex, worker: Hex) {
   return {
