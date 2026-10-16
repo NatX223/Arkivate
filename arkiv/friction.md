@@ -67,3 +67,56 @@ Tooling: pnpm 9.15.9 · TypeScript 5.9.3 · Windows 11 (Git Bash)
 - **Repro:** `client.select({ key: true, createdAt: true }).where(eq("project", "arkivate")).limit(5).fetch()` and inspect `createdAt`.
 - **Workaround:** Fetch a page (limit 50) and take the max `createdAt` in JavaScript instead of trusting `limit(1)`.
 - **Suggestion:** Document the order as part of the query contract, or add `orderBy("$createdAt", "desc")`.
+
+## F6 — Faucet cooldown makes funding a multi-wallet project take hours
+- **When:** 2026-10-16, while funding wallets for Phase 1 (worker-2) and Phase 2 (`sealed_owner`)
+- **What I did:** Funded our four wallets (owner, sealed_owner, worker-1, worker-2) at https://hub.arkiv.network/faucet. Each claim needs a SIWE sign-in and a captcha.
+- **Expected:** Fund all four wallets in one sitting. A multi-party design like ours, or any app that separates identities as the "trust = `$creator`" model encourages, needs several funded addresses on day one.
+- **Actual:** After a claim, the next one is locked for about **1 hour**. Funding worker-2 was blocked mid-session; the two-worker test waited on the cooldown, and `sealed_owner` is still waiting for its turn. Each claim gives 10 GLM, yet our whole Phase 1 test run cost worker-1 about 0.001 GLM, so one claim is worth thousands of writes. The limit is about frequency, not amount.
+- **Repro:** Claim for address A, then immediately try address B from the same Hub account.
+- **Workaround:** Plan claims around the cooldown, and fund the wallets that write first (owner, then workers). Better: send GLM from an already-funded wallet with a plain viem `sendTransaction`, since one 10 GLM claim covers every wallet we have.
+- **Suggestion:** Let one claim split across several addresses, or document the cooldown and the "transfer between your own wallets" pattern on the faucet page.
+
+## F7 — No atomic "create if absent", so multi-worker dedupe is timing-based (and we shipped duplicate receipts once)
+- **When:** 2026-10-16 ~17:30 BST
+- **What I did:** Ran two independent workers on the same public trigger. Each checks for an existing receipt for `(trigger, epoch)` before writing; the backup worker waited 2 s and re-checked.
+- **Expected:** Some way to make "exactly one receipt per epoch" hold across writers: a uniqueness constraint on attributes, a conditional create, or a deterministic key that two writers would collide on.
+- **Actual:** None of these exists. Entity keys come from the *creator's* nonce (`predictEntityKeys({ owner })`), so two workers never collide, and nothing rejects a second receipt with the same attributes. Measured on Tiramisu: worker-1's receipt was mined **9.2 s** after the event's block (≈2 s detection + query + `executeBatch` waiting for the receipt). worker-2 re-checked at about +5–7 s, saw nothing, and wrote a duplicate, mined at +13.0 s. Both receipts are burned, so the duplicate is permanent: receipts `0x644479c6…` and `0x6728e06d…` for epoch `create:0xd8efa591…`.
+- **Repro:** Two wallets each run `findReceipts → (none) → executeBatch(create+burn)` for the same attributes within ~5 s of each other.
+- **Workaround:** Workers rank themselves by address and rank *n* waits *n* × 12 s before re-checking. After that change, 4/4 concurrent firings produced exactly one receipt. It is still probabilistic: a primary that stalls past its slot causes a duplicate, so consumers must treat `(trigger, epoch)` as idempotent.
+- **Suggestion:** A conditional create (`createEntity({ …, ifAbsent: where(...) })`), or a key derived from caller-chosen content (e.g. `keccak(namespace ‖ id)`) that rejects a second create, would make cross-writer dedupe exact. Publishing typical inclusion latency would also help.
+
+## F8 — The event watcher can't be filtered, and creation time isn't queryable
+- **When:** 2026-10-16 ~16:30 BST
+- **What I did:** Built the `on_create` path: react to new entities matching a filter (`project`, `entity_type`, `kind`, creator).
+- **Expected:** Subscribe to `EntityCreated` filtered by creator or attributes, or at least poll "matching entities created after block N".
+- **Actual:**
+  - `watchEntityEvents` delivers every entity operation on the chain. `EntityCreated` carries only `entityKey`, `owner`, `expiresAt` and `creationFlags`, with no attributes, so each candidate needs a follow-up query to know whether it matters.
+  - `$createdAt` can't be used in a predicate (it "carries no index"), so a catch-up for missed events can't ask "created since block N". It can only fetch a page of matches and filter in JavaScript, which misses anything that fell off the page.
+- **Repro:** `watchEntityEvents({ onEntityCreated })` on Tiramisu and count events against your own writes; `eq("$createdAt", u64(1))` → `InvalidPredicateError: "$createdAt" is returned in query results but carries no index`.
+- **Workaround:** Pre-filter events by `owner` (the creator at creation time) when every trigger names a creator. Buffer keys for 2 s and send one query per trigger: `<filter> AND ($key = … OR $key = …)`. Catch up every 5 min with the newest 50 matches, filtered to `createdAt > trigger.createdAt`.
+- **Suggestion:** Index `$createdAt` (it is already an ordered `u64`), and/or allow a server-side filter on the event subscription (creator, `project` / `entity_type` attributes).
+
+## F9 — (local tooling, not Arkiv) Windows locks prevented renaming workspace folders
+- **When:** 2026-10-16 morning, restructuring `packages/*` + `apps/web` into `backend/*` + `frontend`
+- **What I did:** `git mv packages/core backend/core`
+- **Expected:** A directory rename.
+- **Actual:** `fatal: renaming 'packages/core' failed: Permission denied`, even with no node processes running. VS Code held handles on the folders. Removing pnpm's `node_modules` (thousands of junctions) took over 2 minutes and the rename still failed.
+- **Workaround:** `git mv` each tracked file individually into the new tree (history is kept as renames), then `pnpm install`.
+- **Suggestion:** None for Arkiv. Noted because it cost about 15 minutes.
+
+## F10 — (local tooling, not Arkiv) Private key pasted without the `0x` prefix
+- **When:** 2026-10-16, first `pnpm hello` run
+- **What I did:** Pasted the owner key from a wallet export into `.env`.
+- **Expected:** The key works.
+- **Actual:** Our config validation rejected it: `OWNER_PRIVATE_KEY: must be a 0x-prefixed 32-byte hex private key`. The export had 64 hex characters without `0x`, which wallet exports often omit but viem's `privateKeyToAccount` requires.
+- **Workaround:** Added `0x`. Our validator names the variable without printing the value, which made this a one-minute fix.
+- **Suggestion:** Arkiv docs and Hub pages that show keys could state the expected `0x…` format next to every key example.
+
+## F11 — (local tooling, not Arkiv) A duplicated `.env` block silently blanked the worker key
+- **When:** 2026-10-16 ~16:45 BST
+- **What I did:** Added a second worker's block to `.env` (same variable names, empty key) to prepare the two-worker test.
+- **Expected:** worker-1 keeps working.
+- **Actual:** `dotenv` keeps the last value of a duplicated key, so the empty `WORKER_PRIVATE_KEY=` overrode the real one and the worker exited with `Missing required environment variable(s): WORKER_PRIVATE_KEY`.
+- **Workaround:** Renamed the second block to `WORKER_2_*` (a local convenience the code never reads). For the test run, worker-2's values were set in the shell, which takes precedence over `.env`.
+- **Suggestion:** None for Arkiv. For us: one worker identity per `.env`, and set extra identities per process.
