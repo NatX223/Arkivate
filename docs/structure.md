@@ -2,7 +2,8 @@
 
 ## Layout
 
-pnpm monorepo: one repo, one lockfile, three separate deployments (frontend, worker A, worker B).
+pnpm monorepo: one repo, one lockfile, separate deployments (the frontend, and one per worker;
+worker-1 and worker-2 are the reference workers we run).
 
 ```
 Arkivate/                     ← root: shared config only
@@ -24,7 +25,7 @@ Arkivate/                     ← root: shared config only
 │  │  └─ src/
 │  │     ├─ index.ts          # browser-safe: constants, spec, commit, createReader
 │  │     └─ server.ts         # server-only: env, private keys, wallet
-│  ├─ worker/                 # DEPLOYED ×2
+│  ├─ worker/                 # DEPLOYED once per worker
 │  │  ├─ Dockerfile
 │  │  ├─ src/index.ts
 │  │  └─ data/                # gitignored job store
@@ -47,45 +48,14 @@ Arkivate/                     ← root: shared config only
 | What | Where | How |
 |---|---|---|
 | Frontend | Vercel | Root Directory = `frontend`; env `ARKIV_ACCESS_KEY` (server-only, used by the `/api/rpc` read proxy) |
-| Worker A | GCP Cloud Run | `cloudbuild.yaml` + `backend/worker/Dockerfile` (cloud build), GCS volume for `data/` |
-| Worker B | GCP Cloud Run (other region) or another provider | Same image, different `WORKER_PRIVATE_KEY` / `WORKER_NAME` / `PUBLIC_ENDPOINT` |
+| worker-1 | GCP Cloud Run | `cloudbuild.yaml` + `backend/worker/Dockerfile` (remote build), GCS volume for `data/` |
+| worker-2 | GCP Cloud Run, another region | Same image, its own `WORKER_PRIVATE_KEY` / `WORKER_NAME` / `PUBLIC_ENDPOINT` / bucket |
+| Any further worker | Any host with Node 22 | Same code, its own wallet (`pnpm worker`) |
 
 > **No local Docker.** Cloud Build builds the image remotely. Locally, just run `pnpm worker`.
 
-## GCP Cloud Run
-
-One-time setup:
-```bash
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
-gcloud artifacts repositories create arkivate --repository-format=docker --location=REGION
-gcloud storage buckets create gs://PROJECT_ID-arkivate-worker-a --location=REGION
-```
-
-Build (runs in the cloud) and deploy:
-```bash
-gcloud builds submit --config cloudbuild.yaml .
-
-gcloud run deploy arkivate-worker-a \
-  --image REGION-docker.pkg.dev/PROJECT_ID/arkivate/worker:latest \
-  --region REGION \
-  --min-instances=1 --max-instances=1 \
-  --no-cpu-throttling \
-  --allow-unauthenticated \
-  --add-volume name=data,type=cloud-storage,bucket=PROJECT_ID-arkivate-worker-a \
-  --add-volume-mount volume=data,mount-path=/app/backend/worker/data \
-  --set-env-vars WORKER_NAME=worker-a,ARKIV_RPC_HTTP=...,ARKIV_RPC_WS=...,PUBLIC_ENDPOINT=https://<service-url> \
-  --set-secrets WORKER_PRIVATE_KEY=worker-a-key:latest,ARKIV_ACCESS_KEY=arkiv-access-key:latest
-```
-
-Why each flag matters:
-- `--min-instances=1`: the worker must never scale to zero.
-- `--no-cpu-throttling`: CPU stays on between requests, so the WebSocket listener and pollers keep running.
-- `--max-instances=1`: one container per worker identity, so it can't double-fire.
-- GCS volume: the job store survives restarts.
-- `--allow-unauthenticated`: the `/sealed` hand-off and `/health` must be publicly reachable.
-- `--set-secrets`: private keys go in Secret Manager, never in plain env flags.
-
-Worker B: repeat with `arkivate-worker-b`, its own bucket and secret, ideally in a different region.
+Full commands, flags and env tables: [deployment.md](deployment.md). Local setup:
+[run-locally.md](run-locally.md).
 
 The worker listens on `process.env.PORT ?? WORKER_PORT`, serves `GET /health`, and stores its job
 data under `DATA_DIR` (default `backend/worker/data`).

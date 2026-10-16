@@ -1,8 +1,9 @@
 # Dispute verification: what it can and can't prove
 
-`arkivate verify <sealed_key>` (and the web verifier) answer one question: **did the worker that
-accepted this sealed job skip it?** It uses only reads that anyone can repeat; every step prints the
-`arkiv_query` call that reproduces it.
+`arkivate verify <sealed_key>` (and the web verifier at `/verify/<sealed_key>`) answer one question:
+**did the worker that accepted this sealed job skip it?** It uses only reads that anyone can repeat;
+every step prints the `arkiv_query` call that reproduces it. The code is
+[`backend/core/src/verify.ts`](../backend/core/src/verify.ts), shared by the CLI and the web app.
 
 ## Steps and verdicts
 
@@ -14,22 +15,38 @@ accepted this sealed job skip it?** It uses only reads that anyone can repeat; e
 | 4. Condition met | re-run the revealed condition for blocks after `accepted_block` | `NOT_TRIGGERED` / `INCONCLUSIVE` |
 | 5. Receipt present | a sealed receipt from that worker whose epoch is `keccak256(salt ‖ raw_epoch)` and whose `fired_block ≤ met_block + 150` | `SKIPPED` (provable censorship); `PENDING` while the 150-block grace window is open; otherwise `FIRED` |
 
-## Limitation: evidence must still be live at head
+## Real examples on Tiramisu
 
-Arkiv's historical reads have short retention, so verification can only use evidence that is still
-queryable at the current head:
+| Sealed key | Worker | What happened | Verdict |
+|---|---|---|---|
+| `0x24087b8fb21b1f4e4571a4fd3a6d03170e967176a165fefcc2c9133b07973ec7` | worker-2 (`SKIP_SEALED=true`, the staged censorship demo) | accepted @ 655806; matching event `0xb9e5ac49…` created @ 655860; no receipt by the deadline 656010; owner revealed @ 655904 | `SKIPPED` while the event was live (replayed `atBlock` 656100: every step passes, step 5 fails). **Today: `NOT_TRIGGERED`**, see the limitation below |
+| `0x6c982fb47f885f11e117bea68cf597ff53f004016913847b3c72010eae5888df` | worker-1 | accepted @ 656116; event `0xfe27d4b9…` @ 656136; receipt `0x2987b6ab…` fired @ 656148 | `FIRED` while the event was live (replayed `atBlock` 656300). Today: `NOT_TRIGGERED` |
+| `0xe90e2e92de1c06a236927da947483bf2d7dcf46ac9c3466ceec6227108739f6a` | worker-1 | the published reveal does not hash to the commitment | `INVALID_REVEAL` (permanent: it never depends on live evidence) |
+| `0xcc7c310ebd841970042edba2541606e10b1d556e37470f772a0366bfa7f259e6` | worker-1 | no reveal published | `PENDING` |
+
+## Limitation: verify replays at head, so evidence has to be live
+
+Step 4 replays the condition against entities that exist **at the current head**. Arkiv keeps
+history (`atBlock` reads still returned expired entities 13,300 blocks later, see
+`arkiv/friction.md` F19), but its retention is undocumented and our verifier doesn't use it yet.
 
 - **Long-lived by design:** acceptances, receipts and reveals are readonly and burned (30-day expiry,
   extendable by anyone), so neither side can delete them.
-- **The watched data must still be live.** Step 4 replays the condition against entities that exist
-  now. `on_create` and `on_silence` replay well while the matching entities are alive. When the
-  evidence has expired or been deleted, the verdict is **`INCONCLUSIVE`** rather than a guess. This
-  applies to most expiry conditions, `on_count` (no historical counts), pinned deadlines (recorded
-  only by the worker), and anything whose entities are gone, because Arkiv can't tell "expired" from
-  "deleted" (`arkiv/friction.md` F13).
+- **The watched data must still be live.** `on_create` and `on_silence` replay correctly while the
+  matching entities are alive. Once they expire:
+  - `on_create` returns **`NOT_TRIGGERED`**, because "never created" and "created, then expired"
+    look the same at head. This is the case for both examples above, whose `demo_feed` events had a
+    60-minute lifetime. Treat `NOT_TRIGGERED` on an old job as unproven, not as an acquittal.
+  - Expiry conditions (`on_expiring` / `on_expire` with a query watch, pinned deadlines, a watched
+    entity that is gone), `on_count`, `on_extend` and `on_delete` return **`INCONCLUSIVE`** rather
+    than a guess. Arkiv can't tell "expired" from "deleted" (F13), keeps no historical counts in a
+    form we query, and pinned deadlines are recorded only by the worker.
 - **Practical rule:** dispute while the evidence is fresh, within the lifetime of the entities the
-  trigger watched. A public receipt from another trigger on the same entity, or extending the
-  watched entities (they're often `permissionlessExtension`), keeps evidence alive.
+  trigger watched. Extending the watched entities (they're often `permissionlessExtension`) keeps
+  the evidence alive.
+- **Planned fix:** evaluate step 4 `atBlock` the reveal's creation block instead of at head. The
+  owner reveals while the evidence is live, so the replay sees what the worker saw. The replays in
+  the table above use exactly that technique.
 
 ## What stays private
 

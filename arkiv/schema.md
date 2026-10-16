@@ -11,8 +11,8 @@ Network: Tiramisu (chain ID 7738577). Attribute builders live in
 | Entity | Creator | Owner | Flags | Expiry | Status |
 |---|---|---|---|---|---|
 | `worker` | worker wallet | worker | none (mutable) | 1 day, extended every 6 h | ✅ shipped |
-| `trigger` | trigger owner | trigger owner | `permissionlessExtension` | owner picks (default 7 days) | ✅ shipped |
-| `receipt` | worker wallet | **`0x…dEaD`** (burned) | `readonly` + `permissionlessExtension` | 30 days | ✅ shipped (public mode) |
+| `trigger` | trigger owner (CLI owner wallet, or a web user's own wallet) | trigger owner | `permissionlessExtension` | owner picks (default 7 days) | ✅ shipped |
+| `receipt` | worker wallet | **`0x…dEaD`** (burned) | `readonly` + `permissionlessExtension` | 30 days | ✅ shipped (public and sealed mode) |
 | `demo_feed` | demo wallet (owner) | demo wallet | `listing`: `permissionlessExtension` | `--ttl` minutes, or `--blocks` for listing/canary | ✅ shipped |
 | `sealed` | fresh owner wallet | owner | `readonly` | job lifetime (`--days`, default 7) | ✅ shipped |
 | `acceptance` | worker wallet | **`0x…dEaD`** | `readonly` + `permissionlessExtension` | 30 days | ✅ shipped |
@@ -31,7 +31,7 @@ If it stops sending heartbeats, the entity expires and the worker disappears.
 | `project` | str | `arkivate` |
 | `entity_type` | str | `worker` |
 | `version` | str | `0.1.0` |
-| `modes` | str | `public` (later `public,sealed`) |
+| `modes` | str | `public` (the only value written today; sealed hand-offs are accepted regardless) |
 
 Payload (`application/json`): `{ "name": "worker-1", "endpoint": "https://…" }`. `endpoint` is the
 public hand-off URL, or `""` when running locally.
@@ -89,8 +89,8 @@ makes a skipped firing provable.
 |---|---|---|
 | `project` | str | `arkivate` |
 | `entity_type` | str | `receipt` |
-| `trigger` | key | trigger entity key |
-| `mode` | str | `public` (later `sealed`) |
+| `trigger` | key | trigger entity key (the `sealed` entity key in sealed mode) |
+| `mode` | str | `public` \| `sealed` |
 | `epoch` | str | dedupe key, see below |
 | `fired_block` | u64 | head block when the receipt was written |
 | `evidence_block` | u64 | block of the evidence (matched entity, or the evaluation head) |
@@ -108,7 +108,7 @@ Reactivate outcomes:
 | `cap_reached` | `max_extensions` `extended` receipts already exist for this (trigger, subject), counted across all registered workers | Receipt only; the target is left to expire |
 
 Public payload: `{ "matched_keys": ["0x…"], "summary": "new matching entity 0x… at block 648210" }`.
-Sealed receipts (phase 2) will carry only `{ "result_hash": "0x…" }`.
+Sealed receipts carry only `{ "result_hash": "0x…" }` (see [receipt (sealed mode)](#receipt-sealed-mode)).
 
 Epochs (one receipt per `(trigger, epoch)` across all workers):
 

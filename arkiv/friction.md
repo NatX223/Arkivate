@@ -3,6 +3,17 @@
 SDK: @arkiv-network/sdk@0.8.1 · viem@2.56.3 · Node 22.22.0 · Network: Tiramisu (7738577)
 Tooling: pnpm 9.15.9 · TypeScript 5.9.3 · Windows 11 (Git Bash)
 
+Entries are numbered in the order we hit them, and the numbers are cited from code comments and
+commits, so they stay fixed. Index, Arkiv entries first:
+
+| Area | Entries |
+|---|---|
+| **Arkiv: SDK** | [F1](#f1--duplicate-sdk-copies-make-u64--expirationtime-values-not-assignable-to-the-sdks-own-types) duplicate SDK copies break branded types · [F2](#f2--no-access-key-option-in-the-sdk-header-must-be-wired-through-viem-by-hand) no access-key option · [F3](#f3--tiramisu-chain-object-has-no-blockexplorers) no `blockExplorers` · [F14](#f14--extendentity-sets-an-expiry-rather-than-adding-to-it-and-expiryextended-doesnt-say-who-extended) `extendEntity` sets rather than adds · [F16](#f16--entities-with-nothing-to-store-still-need-a-payload-and-a-content-type) payload required |
+| **Arkiv: node / RPC** | [F4](#f4--filtered-arkiv_getentitycount-is-undocumented-and-an-unknown-param-silently-returns-the-chain-wide-count) filtered count undocumented, unknown params ignored · [F5](#f5--query-result-order-is-undocumented) result order undocumented · [F7](#f7--no-atomic-create-if-absent-so-multi-worker-dedupe-is-timing-based-and-we-shipped-duplicate-receipts-once) no conditional create · [F8](#f8--the-event-watcher-cant-be-filtered-and-creation-time-isnt-queryable) unfiltered events, `$createdAt` not queryable · [F12](#f12--no-expiration-event-expiry-has-to-be-detected-by-sweeping) no expiry event · [F13](#f13--noentityfounderror-cant-tell-expired-from-deleted-or-never-existed) expired vs deleted · [F15](#f15--write-latency-varies-a-lot-27-s-to-156-s-on-2-s-blocks) write latency spread · [F19](#f19--historical-reads-work-but-their-retention-is-undocumented-so-dispute-evidence-has-no-known-shelf-life) history retention undocumented |
+| **Arkiv: privacy model** | [F17](#f17--our-design-worth-a-line-in-arkivs-privacy-docs-hashes-of-public-data-arent-private-on-arkiv) hashes of public data aren't private |
+| **Arkiv: Hub / faucet** | [F6](#f6--faucet-cooldown-makes-funding-a-multi-wallet-project-take-hours) faucet cooldown |
+| **[tooling]** (not Arkiv) | [F9](#f9--tooling-windows-locks-prevented-renaming-workspace-folders) Windows folder locks · [F10](#f10--tooling-private-key-pasted-without-the-0x-prefix) key without `0x` · [F11](#f11--tooling-a-duplicated-env-block-silently-blanked-the-worker-key) duplicated `.env` key · [F18](#f18--tooling-nextjs-turbopack-cant-import-a-workspace-package-written-as-esm-typescript) Turbopack and `.js` imports |
+
 ## F1 — Duplicate SDK copies make `u64()` / `ExpirationTime` values "not assignable" to the SDK's own types
 - **When:** 2026-10-15 23:45 BST
 - **What I did:** In a pnpm workspace, added `@arkiv-network/sdk@0.8.1` to `backend/core` (then `packages/core`) while the
@@ -97,7 +108,7 @@ Tooling: pnpm 9.15.9 · TypeScript 5.9.3 · Windows 11 (Git Bash)
 - **Workaround:** Pre-filter events by `owner` (the creator at creation time) when every trigger names a creator. Buffer keys for 2 s and send one query per trigger: `<filter> AND ($key = … OR $key = …)`. Catch up every 5 min with the newest 50 matches, filtered to `createdAt > trigger.createdAt`.
 - **Suggestion:** Index `$createdAt` (it is already an ordered `u64`), and/or allow a server-side filter on the event subscription (creator, `project` / `entity_type` attributes).
 
-## F9 — (local tooling, not Arkiv) Windows locks prevented renaming workspace folders
+## F9 — [tooling] Windows locks prevented renaming workspace folders
 - **When:** 2026-10-16 morning, restructuring `packages/*` + `apps/web` into `backend/*` + `frontend`
 - **What I did:** `git mv packages/core backend/core`
 - **Expected:** A directory rename.
@@ -105,7 +116,7 @@ Tooling: pnpm 9.15.9 · TypeScript 5.9.3 · Windows 11 (Git Bash)
 - **Workaround:** `git mv` each tracked file individually into the new tree (history is kept as renames), then `pnpm install`.
 - **Suggestion:** None for Arkiv. Noted because it cost about 15 minutes.
 
-## F10 — (local tooling, not Arkiv) Private key pasted without the `0x` prefix
+## F10 — [tooling] Private key pasted without the `0x` prefix
 - **When:** 2026-10-16, first `pnpm hello` run
 - **What I did:** Pasted the owner key from a wallet export into `.env`.
 - **Expected:** The key works.
@@ -113,7 +124,7 @@ Tooling: pnpm 9.15.9 · TypeScript 5.9.3 · Windows 11 (Git Bash)
 - **Workaround:** Added `0x`. Our validator names the variable without printing the value, which made this a one-minute fix.
 - **Suggestion:** Arkiv docs and Hub pages that show keys could state the expected `0x…` format next to every key example.
 
-## F11 — (local tooling, not Arkiv) A duplicated `.env` block silently blanked the worker key
+## F11 — [tooling] A duplicated `.env` block silently blanked the worker key
 - **When:** 2026-10-16 ~16:45 BST
 - **What I did:** Added a second worker's block to `.env` (same variable names, empty key) to prepare the two-worker test.
 - **Expected:** worker-1 keeps working.
@@ -135,6 +146,7 @@ Tooling: pnpm 9.15.9 · TypeScript 5.9.3 · Windows 11 (Git Bash)
 - **What I did:** At a deadline, re-read the watched entity to decide between `on_expire` and `on_delete`.
 - **Expected:** A read that distinguishes "expired at block N" from "deleted at block N" from "unknown key".
 - **Actual:** `getEntity` throws `NoEntityFoundError` for all three. The SDK source says so ("no live entity has that key — it never existed, or it was deleted or has expired"), and query results simply omit the entity. Historical reads (`atBlock`) have short retention, so you can't reliably look back either.
+  **Update 2026-10-16 23:15:** the retention claim was an assumption. `atBlock` reads still worked 13,300 blocks back (see F19); how far back they work is undocumented.
 - **Repro:** `getEntity(k)` after `deleteEntity(k)`, and after `k` expires: identical errors.
 - **Workaround:** Combine evidence. A seen `EntityDeleted` event, or the entity vanishing *before* its known `expiresAt` (expiry can't come early), means deleted; otherwise expired. Tested: owner-deleted canary `C3` fired `on_delete`, and its `on_expire` trigger correctly never fired.
 - **Suggestion:** A tombstone read such as `getEntityStatus(k) → { state: "expired" | "deleted", atBlock }`, or a `reason` field on `NoEntityFoundError`.
@@ -178,7 +190,7 @@ Tooling: pnpm 9.15.9 · TypeScript 5.9.3 · Windows 11 (Git Bash)
 - **Workaround:** Mix the job's secret salt in: `epoch = keccak256(salt ‖ raw_epoch)` and `result_hash = keccak256(epoch ‖ matched_key)`. Re-tested live: same spec, same event → different epochs, and `verify` still recomputes them after a reveal.
 - **Suggestion:** Arkiv's privacy guidance could say plainly: "anything you hash on-chain can be brute-forced if its inputs are public or guessable; always add a secret salt". The hackathon rules already ban hashed personal data; the same reasoning applies to app data.
 
-## F18 — (local tooling, not Arkiv) Next.js Turbopack can't import a workspace package written as ESM TypeScript
+## F18 — [tooling] Next.js Turbopack can't import a workspace package written as ESM TypeScript
 - **When:** 2026-10-16 (web app)
 - **What I did:** `next dev --turbopack` with `transpilePackages: ["@arkivate/core"]`. Core is NodeNext TypeScript, so its imports end in `.js` (`export * from "./commit.js"`), the form `tsx` and `tsc` require.
 - **Expected:** The bundler resolves `./commit.js` to `./commit.ts`, as `tsc`, `tsx` and Vitest do.
@@ -186,3 +198,12 @@ Tooling: pnpm 9.15.9 · TypeScript 5.9.3 · Windows 11 (Git Bash)
 - **Repro:** Any pnpm workspace package with `.js`-suffixed relative imports in `.ts` files, imported from a Next 15.5 app with `--turbopack`.
 - **Workaround:** Build the web app with webpack (`next dev` / `next build` without `--turbopack`) and set `config.resolve.extensionAlias = { ".js": [".ts", ".tsx", ".js"] }` in `next.config.ts`.
 - **Suggestion:** Not Arkiv's to fix. But an Arkiv starter that pairs a shared TS package with a Next.js front end would hit this on day one; the Arkiv templates could ship with the webpack alias already set.
+
+## F19 — Historical reads work, but their retention is undocumented, so dispute evidence has no known shelf life
+- **When:** 2026-10-16 ~23:10 BST, while collecting evidence for the docs
+- **What I did:** Re-ran `arkivate verify` on the staged censorship case: sealed `0x24087b8f…`, accepted by worker-2 at block 655806, matching event `0xb9e5ac49…` created at 655860, no receipt from worker-2 by the deadline 656010.
+- **Expected:** `SKIPPED`, as it was while the event entity was alive.
+- **Actual:** `NOT_TRIGGERED`. The `demo_feed` event had a 60-minute lifetime and had expired, and our `on_create` replay only queries live entities at head. The same query with `.atBlock(655870)`, at head 669155 (13,300 blocks, ~7.4 h later), still returned `0xb9e5ac49…@655860`, and a replay at block 656100 gives `SKIPPED` with every step passing. So Arkiv kept the history; our verifier didn't ask for it, because nothing documents how long `atBlock` history is kept and we had assumed "short".
+- **Repro:** `client.select({ key: true, createdAt: true }).where(eq("entity_type", str("demo_feed"))).atBlock(655870n).limit(5).fetch()` returns the expired entity; the same query without `atBlock` returns nothing.
+- **Workaround:** None shipped yet. The fix on our side is to replay the condition `atBlock` the reveal's creation block (the owner reveals while the evidence is fresh) instead of at head. Until then, a dispute has to be verified while the watched entities are still live (see `docs/verification.md`).
+- **Suggestion:** Document `atBlock` retention for Tiramisu and mainnet (blocks or hours), and return a distinct error when a requested block is beyond it, so verifiers can tell "no data then" from "history pruned".
