@@ -29,7 +29,10 @@ Tooling: pnpm 9.15.9 · TypeScript 5.9.3 · Windows 11 (Git Bash)
 - **Expected:** An `accessKey` option, or a JSDoc example showing the header (the keyless RPC is rate-limited to ≈100 queries/hour/IP).
 - **Actual:** There is no mention of access keys anywhere in `dist/` (`grep -ri "api-key\|apikey\|access.key"` finds nothing). Every example uses bare `http()`.
 - **Repro:** `grep -rni "api-key\|apikey\|access" node_modules/@arkiv-network/sdk/dist/*.d.ts`
-- **Workaround:** `http(url, { fetchOptions: { headers: { "X-API-KEY": key } } })` in `backend/core/src/reader.ts`. The browser `WebSocket` / Node 22 global `WebSocket` cannot set custom headers, so it is still unclear how the key applies to the WS transport used by `watchEntityEvents`. To be confirmed when `pnpm hello` step 7 runs.
+- **Workaround:** `http(url, { fetchOptions: { headers: { "X-API-KEY": key } } })` in `backend/core/src/reader.ts`. The browser `WebSocket` / Node 22 global `WebSocket` cannot set custom headers, so it is still unclear how the key applies to the WS transport used by `watchEntityEvents`.
+  **Update 2026-10-16:** `pnpm hello` step 7 passed with a plain `webSocket(url)` and no key: the
+  `EntityCreated` event arrived. So WS subscriptions currently work keyless, but whether they count
+  against the keyless rate limit, or get cut off under load, is undocumented.
 - **Suggestion:** Export a helper such as `arkivTransport({ accessKey })` for HTTP and WS, and document the header name and the WS story on the Hub API-keys page.
 
 ## F3 — `tiramisu` chain object has no `blockExplorers`
