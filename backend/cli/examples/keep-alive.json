@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "cond": {
+    "type": "on_expiring",
+    "watch": {
+      "where": [
+        ["eq", "project", { "str": "arkivate" }],
+        ["eq", "entity_type", { "str": "demo_feed" }],
+        ["eq", "kind", { "str": "listing" }]
+      ],
+      "created_by": "0xa81415E8Fa827099BbEb5eA11199533D2e2967eA"
+    },
+    "lead_blocks": 40,
+    "deadline": "follow"
+  },
+  "action": { "type": "extend", "extend_blocks": 120, "max_extensions": 2 }
+}
