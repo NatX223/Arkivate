@@ -58,3 +58,12 @@ Tooling: pnpm 9.15.9 · TypeScript 5.9.3 · Windows 11 (Git Bash)
 - **Repro:** `client.request({ method: "arkiv_getEntityCount", params: [{ nonsense: 1 }] })`
 - **Workaround:** Call the raw RPC with exactly `[{ query, atBlock }]`, built from the SDK's `render()`, and sanity-check that the result is below the unfiltered count.
 - **Suggestion:** Expose `getEntityCount({ where, atBlock })` in the SDK, add the params to `ArkivRpcSchema`, and have the node reject unknown keys.
+
+## F5 — Query result order is undocumented
+- **When:** 2026-10-16 ~15:00 BST
+- **What I did:** Needed "the newest entity from creator X" for the `on_silence` condition. Searched the SDK source (`query/engine.ts`, `queryResult.ts`, `queryBuilder.ts`) and README for ordering.
+- **Expected:** A documented sort order (or an `orderBy`), since `$createdAt` cannot be used in a predicate (it is "returned in query results but carries no index").
+- **Actual:** No mention of ordering anywhere in the SDK. Observed on Tiramisu: results come back newest-first by creation block (two triggers created ~5 blocks apart; three `demo_feed` events), but nothing guarantees it.
+- **Repro:** `client.select({ key: true, createdAt: true }).where(eq("project", "arkivate")).limit(5).fetch()` and inspect `createdAt`.
+- **Workaround:** Fetch a page (limit 50) and take the max `createdAt` in JavaScript instead of trusting `limit(1)`.
+- **Suggestion:** Document the order as part of the query contract, or add `orderBy("$createdAt", "desc")`.
