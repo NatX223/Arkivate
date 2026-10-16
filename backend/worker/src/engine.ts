@@ -9,6 +9,9 @@ import {
   onCreateFiring,
   readLive,
   recentMatches,
+  resultHash,
+  sealedEpoch,
+  type Destination,
   type Firing,
   type Reader,
   type ReceiptOutcome,
@@ -17,6 +20,7 @@ import {
 import type { Logger } from "pino";
 import type { Hex } from "viem";
 import type { ChainWriter } from "./chain.js";
+import type { Alert } from "./deliver.js";
 import { ExpiryWatcher } from "./expiry.js";
 import { firedId, type Store } from "./store.js";
 
@@ -33,6 +37,10 @@ export interface EngineOptions {
   triggerCreators: readonly string[];
   /** Receipts (each one costs gas) this worker writes per trigger per hour. */
   maxReceiptsPerTriggerPerHour: number;
+  /** DEMO SWITCH: accept sealed jobs but never fire them. */
+  skipSealed: boolean;
+  /** Sends a sealed alert to its private destination. */
+  deliver: (d: Destination, a: Alert) => Promise<void>;
   pollMs?: number;
   sweepMs?: number;
   refreshMs?: number;
@@ -75,6 +83,8 @@ export class Engine {
     skippedPeer: 0,
     wouldFire: 0,
     skippedByCap: 0,
+    sealedSkippedOnPurpose: 0,
+    deliveryFailures: 0,
     triggersNotAllowed: 0,
     errors: 0,
   };
@@ -89,6 +99,41 @@ export class Engine {
 
   get watchedCount() {
     return this.expiry.watchedCount;
+  }
+
+  get sealedJobCount() {
+    return [...this.triggers.values()].filter((t) => t.mode === "sealed").length;
+  }
+
+  /** Accepted sealed jobs whose `sealed` entity is still live, as engine triggers. */
+  private async loadSealedJobs(): Promise<TriggerRecord[]> {
+    const out: TriggerRecord[] = [];
+    for (const [k, job] of Object.entries(this.o.store.data.sealed)) {
+      const live = await readLive(this.o.reader, k as Hex);
+      if (!live) continue; // the owner's sealed entity expired: the job is over
+      out.push({
+        key: k as Hex,
+        creator: job.creator,
+        // Conditions count from acceptance: that's what the worker promised, and what verify checks.
+        createdAt: BigInt(job.acceptedBlock),
+        expiresAt: live.expiresAt,
+        status: "active",
+        spec: job.spec,
+        mode: "sealed",
+      });
+    }
+    return out;
+  }
+
+  /** Start a just-accepted sealed job now instead of at the next 5-minute refresh. */
+  async activateSealed(sealedKey: Hex) {
+    const job = (await this.loadSealedJobs()).find((t) => t.key === sealedKey);
+    if (!job) return;
+    this.triggers.set(job.key, job);
+    await this.expiry.rebuild([...this.triggers.values()], await this.o.reader.getBlockNumber());
+    if (job.spec.cond.type === "on_create") {
+      for (const m of await recentMatches(this.o.reader, job.spec.cond, job.createdAt)) await this.fire(job, onCreateFiring(m));
+    }
   }
 
   async start() {
@@ -115,7 +160,8 @@ export class Engine {
     const allow = this.o.triggerCreators;
     const accepted = allow.length === 0 ? triggers : triggers.filter((t) => allow.includes(lower(t.creator)));
     this.stats.triggersNotAllowed = triggers.length - accepted.length;
-    this.triggers = new Map(accepted.map((t) => [t.key, t]));
+    const sealed = await this.loadSealedJobs();
+    this.triggers = new Map([...accepted, ...sealed].map((t) => [t.key, t]));
     for (const i of invalid) this.o.log.debug({ trigger: i.key, error: i.error }, "ignoring invalid trigger");
 
     const workers = await this.refreshWorkers();
@@ -256,14 +302,25 @@ export class Engine {
   private async fire(t: TriggerRecord, f: Firing) {
     const id = firedId(t.key, f.epoch);
     if (this.o.store.data.fired[id] || this.inflight.has(id) || this.dryFired.has(id)) return;
+    const sealed = t.mode === "sealed";
+    // Sealed receipts carry a hashed epoch: the raw one would say what matched.
+    const epoch = sealed ? sealedEpoch(f.epoch) : f.epoch;
+    if (sealed && this.o.skipSealed) {
+      if (!this.dryFired.has(id)) {
+        this.dryFired.add(id);
+        this.stats.sealedSkippedOnPurpose++;
+        this.o.log.warn({ trigger: t.key, epoch }, "SKIP_SEALED: intentionally skipping (demo switch)");
+      }
+      return;
+    }
     this.inflight.add(id);
-    const log = this.o.log.child({ trigger: t.key, epoch: f.epoch });
+    const log = this.o.log.child({ trigger: t.key, epoch });
     try {
-      let peer = await this.peerReceipt(t.key, f.epoch);
-      if (!peer) {
+      let peer = await this.peerReceipt(t.key, epoch);
+      if (!peer && !sealed) {
         // Lower-ranked workers go first; the rest wait, then re-check before spending gas.
         if (this.rank > 0) await sleep(Math.min(this.rank * FIRE_SLOT_MS, MAX_FIRE_DELAY_MS) + Math.random() * 1_000);
-        peer = await this.peerReceipt(t.key, f.epoch);
+        peer = await this.peerReceipt(t.key, epoch);
       }
       if (peer) {
         this.stats.skippedPeer++;
@@ -294,11 +351,15 @@ export class Engine {
       if (!writer) {
         this.stats.wouldFire++;
         this.dryFired.add(id);
-        log.warn({ summary: f.summary, outcome: plan?.outcome }, "WOULD FIRE (dry run: worker wallet unfunded)");
+        log.warn({ summary: sealed ? "(sealed)" : f.summary, outcome: plan?.outcome }, "WOULD FIRE (dry run: worker wallet unfunded)");
         return;
       }
 
       const head = await this.o.reader.getBlockNumber();
+      if (sealed) {
+        await this.fireSealed(t, f, id, sealedEpoch(f.epoch), head, writer, log);
+        return;
+      }
       const summary = plan ? `${plan.outcome}: ${f.summary}` : f.summary;
       const receipt = await writer.writeReceipt(
         {
@@ -331,6 +392,46 @@ export class Engine {
     } finally {
       this.inflight.delete(id);
     }
+  }
+
+  /** Sealed: deliver privately first, then the receipt (payload `{ result_hash }` only). */
+  private async fireSealed(
+    t: TriggerRecord,
+    f: Firing,
+    id: string,
+    epoch: Hex,
+    head: bigint,
+    writer: ChainWriter,
+    log: typeof this.o.log,
+  ) {
+    const job = this.o.store.data.sealed[t.key];
+    if (!job) throw new Error("sealed job missing from the local store");
+    if (!this.o.store.data.delivered[id]) {
+      try {
+        await this.o.deliver(job.destination, {
+          sealedKey: t.key,
+          epoch,
+          firedBlock: head,
+          evidenceBlock: f.evidenceBlock,
+          matchedKeys: f.matchedKeys,
+          summary: f.summary,
+        });
+      } catch (e) {
+        this.stats.deliveryFailures++;
+        throw e; // no receipt without delivery; retried on a later pass
+      }
+      this.o.store.data.delivered[id] = true;
+      await this.o.store.write();
+    }
+    const receipt = await writer.writeReceipt(
+      { trigger: t.key, mode: "sealed", epoch, firedBlock: head, evidenceBlock: f.evidenceBlock },
+      { result_hash: resultHash(f.epoch, f.matchedKeys[0]) },
+    );
+    this.recent.get(t.key)?.push(Date.now());
+    this.stats.firedSelf++;
+    this.o.store.data.fired[id] = { by: "self", receipt: receipt.key, tx: receipt.tx, at: new Date().toISOString() };
+    await this.o.store.write();
+    log.info({ receipt: receipt.key, tx: receipt.tx }, "FIRED (sealed): delivered + receipt");
   }
 
   private fail(where: string, e: unknown) {

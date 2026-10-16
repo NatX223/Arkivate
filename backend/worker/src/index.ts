@@ -6,7 +6,9 @@ import { formatEther, type Hex } from "viem";
 import { CHAIN_ID, txUrl } from "@arkivate/core";
 import { loadConfig, makeReader, makeWallet, makeWsReader } from "@arkivate/core/server";
 import { ChainWriter } from "./chain.js";
+import { deliver } from "./deliver.js";
 import { Engine } from "./engine.js";
+import { handoffRouter } from "./handoff.js";
 import { openStore } from "./store.js";
 
 const log = pino({ name: "arkivate-worker" });
@@ -82,10 +84,26 @@ async function main() {
     writer: () => (live ? chain : null),
     triggerCreators: env.TRIGGER_CREATORS,
     maxReceiptsPerTriggerPerHour: env.MAX_RECEIPTS_PER_TRIGGER_PER_HOUR,
+    skipSealed: env.SKIP_SEALED,
+    deliver: (d, a) => deliver(d, a, env.TELEGRAM_BOT_TOKEN),
   });
   await engine.start();
+  if (env.SKIP_SEALED) {
+    log.warn("SKIP_SEALED=true: DEMO SWITCH ON. Sealed jobs are accepted but will never fire.");
+  }
 
   const app = express();
+  app.use(
+    handoffRouter({
+      reader,
+      store,
+      log,
+      address,
+      writer: () => (live ? chain : null),
+      corsOrigins: env.CORS_ORIGINS,
+      onAccepted: (k) => engine.activateSealed(k),
+    }),
+  );
   app.get("/health", (_req, res) => {
     res.json({
       ok: true,
@@ -96,12 +114,14 @@ async function main() {
       workerKey: workerKey ?? null,
       triggers: engine.triggerCount,
       watchedEntities: engine.watchedCount,
+      sealedJobs: engine.sealedJobCount,
+      skipSealed: env.SKIP_SEALED,
+      telegram: env.TELEGRAM_BOT_TOKEN ? "configured" : "not configured",
       triggerCreators: env.TRIGGER_CREATORS.length > 0 ? env.TRIGGER_CREATORS : "any",
       maxReceiptsPerTriggerPerHour: env.MAX_RECEIPTS_PER_TRIGGER_PER_HOUR,
       stats: engine.stats,
     });
   });
-  // TODO(phase 2): POST /sealed hand-off — see technical-plan §5.
   app.listen(port, () => log.info({ port }, "listening"));
 
   const shutdown = () => {

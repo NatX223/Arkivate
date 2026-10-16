@@ -3,7 +3,7 @@ import { eq } from "@arkiv-network/sdk/query";
 import type { Hex } from "viem";
 import { ENTITY_TYPES, PROJECT } from "./constants.js";
 import type { Reader } from "./reader.js";
-import { PublicTriggerSpec, type PublicTriggerSpec as Spec } from "./spec.js";
+import { PublicTriggerSpec, type TriggerSpec } from "./spec.js";
 
 /** Read-side helpers for Arkivate entities. Browser-safe: they only need a Reader. */
 
@@ -15,7 +15,9 @@ export interface TriggerRecord {
   createdAt: bigint;
   expiresAt: bigint;
   status: string;
-  spec: Spec;
+  spec: TriggerSpec;
+  /** `sealed`: a private job this worker accepted (key = the sealed entity's key). */
+  mode?: "public" | "sealed";
 }
 
 export interface InvalidTrigger {

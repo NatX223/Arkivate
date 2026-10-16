@@ -6,6 +6,7 @@ import {
   ENTITY_TYPES,
   PROJECT,
   WORKER_VERSION,
+  acceptanceAttributes,
   receiptAttributes,
   workerAttributes,
   type PublicReceiptPayload,
@@ -78,6 +79,29 @@ export class ChainWriter {
     );
   }
 
+  /** A worker's promise to run a sealed job: burned, so it can't be withdrawn to dodge a dispute. */
+  writeAcceptance(sealedKey: Hex, commitment: Hex, sealedCreator: Hex, acceptedBlock: bigint) {
+    return this.serial(async () => {
+      const [predicted] = await this.reader.predictEntityKeys({ owner: this.address, count: 1 });
+      if (!predicted) throw new Error("predictEntityKeys returned nothing");
+      const batch = await this.wallet.executeBatch({
+        creates: [
+          {
+            salt: predicted.salt,
+            payload: new Uint8Array(),
+            contentType: "application/octet-stream",
+            attributes: acceptanceAttributes(sealedKey, commitment, sealedCreator, acceptedBlock),
+            expires: ExpirationTime.fromDays(30),
+            flags: { readonly: true, permissionlessExtension: true },
+          },
+        ],
+        ownershipChanges: [{ entityKey: predicted.key, newOwner: DEAD }],
+      });
+      if (!batch.createdEntities.includes(predicted.key)) throw new Error("acceptance key mismatch");
+      return { key: predicted.key, tx: batch.txHash };
+    });
+  }
+
   /**
    * Receipt = readonly create + ownership burn to 0x…dEaD, atomically, so it can never vanish.
    * With `extension` (Reactivate), the extend rides in the same batch: the entity is extended if
@@ -85,7 +109,7 @@ export class ChainWriter {
    */
   writeReceipt(
     fields: ReceiptFields,
-    body: PublicReceiptPayload,
+    body: PublicReceiptPayload | { result_hash: Hex },
     extension?: { entityKey: Hex; expiresAt: bigint },
   ) {
     return this.serial(async () => {

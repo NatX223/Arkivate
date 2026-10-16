@@ -33,6 +33,13 @@ const EnvSchema = z.object({
     .pipe(z.array(z.string().regex(/^0x[0-9a-f]{40}$/, "must be comma-separated 0x addresses"))),
   /** Spam/gas guard: receipts (each one costs gas) a worker writes per trigger per hour. */
   MAX_RECEIPTS_PER_TRIGGER_PER_HOUR: z.coerce.number().int().positive().default(12),
+  /**
+   * DEMO SWITCH: accept sealed jobs but never fire them, to stage the censorship demo. Off by
+   * default; never enable on a worker you want people to trust.
+   */
+  SKIP_SEALED: z.enum(["true", "false", ""]).default("false").transform((v) => v === "true"),
+  /** Origins allowed to call `POST /sealed` from a browser (comma-separated, or `*`). */
+  CORS_ORIGINS: z.string().default("*"),
   TELEGRAM_BOT_TOKEN: optional(z.string()),
 });
 
