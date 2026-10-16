@@ -50,53 +50,43 @@ feature work until every Phase 0 acceptance check passes.
 
 ---
 
-## 3. Repository layout to scaffold
+## 3. Repository layout
+
+Restructured after scaffolding; **`docs/structure.md` is the source of truth** for layout,
+import rules and deployment. Summary:
 
 ```
 arkivate/
-├─ CLAUDE.md                     # this file
-├─ README.md                     # placeholder: one-paragraph pitch + "setup coming"
-├─ LICENSE                       # MIT, current year, author: Sinachi
-├─ WALLETS.md                    # table of public addresses (filled in by human)
-├─ .gitignore                    # node_modules, dist, .env*, *.local, data/, .next
-├─ .env.example                  # every var, no values
-├─ .nvmrc                        # 22
-├─ package.json                  # root, private, workspaces scripts
-├─ pnpm-workspace.yaml           # packages/*, apps/*
-├─ tsconfig.base.json
-├─ docs/
-│  └─ technical-plan.md          # copy of the design doc
-├─ arkiv/
-│  ├─ schema.md                  # stub with the six entity types as headings
-│  └─ friction.md                # template header (see §7)
-├─ scripts/
-│  ├─ hello.ts                   # Phase 0 smoke test (see §6)
-│  └─ gen-wallets.ts             # prints 4 fresh keypairs (see §5)
-├─ packages/
-│  ├─ core/                      # @arkivate/core
-│  │  ├─ package.json
-│  │  ├─ tsconfig.json
+├─ CLAUDE.md · README.md · LICENSE · WALLETS.md
+├─ .gitignore · .dockerignore · .env.example · .nvmrc
+├─ package.json                  # root scripts + dev tools
+├─ pnpm-workspace.yaml           # backend/*, frontend
+├─ tsconfig.base.json · tsconfig.json (project references)
+├─ cloudbuild.yaml               # remote build of the worker image
+├─ docs/                         # prose only: technical-plan.md, structure.md
+├─ arkiv/                        # judge-required: schema.md, friction.md (see §7)
+├─ backend/
+│  ├─ core/                      # @arkivate/core (shared library, never deployed alone)
 │  │  └─ src/
-│  │     ├─ index.ts             # re-exports
+│  │     ├─ index.ts             # browser-safe: constants, spec, commit, reader
+│  │     ├─ server.ts            # server-only: config (env), wallet factories
 │  │     ├─ config.ts            # env loading + validation (zod)
-│  │     ├─ clients.ts           # reader/wallet factories (Tiramisu, access-key header)
-│  │     ├─ constants.ts         # PROJECT="arkivate", DEAD address, entity_type names
-│  │     ├─ spec.ts              # TODO stub: TriggerSpec zod schema
-│  │     └─ commit.ts            # TODO stub: canonical hash commitment
-│  ├─ worker/                    # @arkivate/worker  (bin: arkivate-worker)
-│  │  ├─ package.json
-│  │  ├─ tsconfig.json
-│  │  └─ src/index.ts            # stub: logs "worker starting" + reads config
-│  └─ cli/                       # @arkivate/cli  (bin: arkivate)
-│     ├─ package.json
-│     ├─ tsconfig.json
-│     └─ src/index.ts            # commander skeleton; subcommands print "not implemented"
-└─ apps/
-   └─ web/                       # Next.js 15 app router + Tailwind; one page: "Arkivate"
+│  │     ├─ reader.ts            # createReader / createWsReader (Tiramisu, access-key header)
+│  │     ├─ wallet.ts            # makeReader / makeWallet from env
+│  │     ├─ constants.ts         # PROJECT, CHAIN_ID, RPC URLs, DEAD, entity_type names
+│  │     ├─ spec.ts              # TriggerSpec zod schema
+│  │     └─ commit.ts            # canonical hash commitment
+│  ├─ worker/                    # @arkivate/worker (bin: arkivate-worker), deployed ×2
+│  │  ├─ Dockerfile
+│  │  ├─ src/index.ts            # GET /health on PORT ?? WORKER_PORT
+│  │  └─ data/                   # gitignored job store (DATA_DIR)
+│  ├─ cli/                       # @arkivate/cli (bin: arkivate), local only
+│  └─ scripts/                   # @arkivate/scripts: hello.ts (§6), gen-wallets.ts (§5)
+└─ frontend/                     # Next.js 15 app router + Tailwind, deployed on Vercel
 ```
 
-Packages reference `@arkivate/core` via `"workspace:*"`. Packages run from source with `tsx`
-during the hackathon; a build step is optional.
+`frontend` imports `@arkivate/core` only, **never** `@arkivate/core/server`. Packages reference
+`@arkivate/core` via `"workspace:^"` and run from source with `tsx`; there is no build step.
 
 ---
 
@@ -104,27 +94,27 @@ during the hackathon; a build step is optional.
 
 Pin the Arkiv SDK and viem **exactly**; they are known to work together.
 
-**`packages/core`**
+**`backend/core`**
 ```
 pnpm --filter @arkivate/core add --save-exact @arkiv-network/sdk@0.8.1 viem@2.56.3
 pnpm --filter @arkivate/core add zod canonicalize dotenv
 ```
 
-**`packages/worker`**
+**`backend/worker`**
 ```
 pnpm --filter @arkivate/worker add @arkivate/core@workspace:* express lowdb pino
 pnpm --filter @arkivate/worker add -D @types/express
 ```
 
-**`packages/cli`**
+**`backend/cli`**
 ```
 pnpm --filter @arkivate/cli add @arkivate/core@workspace:* commander
 ```
 
-**`apps/web`**
+**`frontend`**
 ```
-pnpm create next-app@latest apps/web --ts --tailwind --app --eslint --src-dir --use-pnpm --no-import-alias
-pnpm --filter web add @arkivate/core@workspace:*
+pnpm create next-app@latest frontend --ts --tailwind --app --eslint --src-dir --use-pnpm --no-import-alias
+pnpm --filter frontend add @arkivate/core@workspace:*
 ```
 
 **Root (dev)**
@@ -146,30 +136,36 @@ ARKIV_RPC_WS=wss://rpc.tiramisu.db-chain.testnet.arkiv.network
 ARKIV_ACCESS_KEY=
 OWNER_PRIVATE_KEY=
 SEALED_OWNER_PRIVATE_KEY=
-WORKER_A_PRIVATE_KEY=
-WORKER_B_PRIVATE_KEY=
+WORKER_NAME=
+WORKER_PRIVATE_KEY=
 WORKER_PORT=8787
 PUBLIC_ENDPOINT=
+DATA_DIR=
 TELEGRAM_BOT_TOKEN=
 ```
 
-`packages/core/src/config.ts`: load with `dotenv`, validate with zod. Private keys must match
+Each worker deployment has exactly one identity (`WORKER_NAME` + `WORKER_PRIVATE_KEY`); worker A
+and worker B are the same image with different values. On Cloud Run, `PORT` overrides
+`WORKER_PORT`.
+
+`backend/core/src/config.ts`: load with `dotenv`, validate with zod. Private keys must match
 `^0x[0-9a-fA-F]{64}$`. Fail fast with a clear message naming the missing variable (never print
 the value).
 
-`scripts/gen-wallets.ts`: use viem `generatePrivateKey` + `privateKeyToAccount` to print four
-labelled `KEY=value` lines (owner, sealed_owner, worker_a, worker_b) plus their addresses, so the
-human can paste keys into `.env` and addresses into `WALLETS.md`. The script must not write any
+`backend/scripts/gen-wallets.ts`: use viem `generatePrivateKey` + `privateKeyToAccount` to print four
+labelled keys (owner, sealed_owner, worker_a, worker_b; the worker keys as `WORKER_PRIVATE_KEY`
+for their deployment) plus their addresses, so the human can paste keys into `.env` / Secret
+Manager and addresses into `WALLETS.md`. The script must not write any
 file itself.
 
 **Human steps (Claude cannot do these; print them as a checklist at the end of Phase 0):**
-1. Run `pnpm tsx scripts/gen-wallets.ts`, paste the output into `.env` and the addresses into `WALLETS.md`.
+1. Run `pnpm wallets`, paste the output into `.env` and the addresses into `WALLETS.md`.
 2. Fund each address at https://hub.arkiv.network/faucet (needs SIWE sign-in + captcha).
 3. Create an access key at https://hub.arkiv.network/api-keys and put it in `.env`.
 
 ---
 
-## 6. `scripts/hello.ts`: the Phase 0 smoke test
+## 6. `backend/scripts/hello.ts`: the Phase 0 smoke test
 
 Uses `@arkivate/core` clients and the `OWNER_PRIVATE_KEY`. Steps, each printing a clear line:
 
@@ -191,7 +187,7 @@ Uses `@arkivate/core` clients and the `OWNER_PRIVATE_KEY`. Steps, each printing 
    `hello` entity, and confirm an `EntityCreated` event for that key arrives within 30 s. Then
    unwatch and exit 0.
 
-Run with `pnpm hello` (root script → `tsx scripts/hello.ts`). Any deviation from expected SDK
+Run with `pnpm hello` (root script → `tsx backend/scripts/hello.ts`). Any deviation from expected SDK
 behaviour goes straight into `arkiv/friction.md`.
 
 ---
@@ -222,11 +218,11 @@ Number entries F1, F2, … in order. Include faucet, docs and tooling friction, 
 ```json
 {
   "scripts": {
-    "hello": "tsx scripts/hello.ts",
-    "wallets": "tsx scripts/gen-wallets.ts",
-    "worker": "tsx packages/worker/src/index.ts",
-    "cli": "tsx packages/cli/src/index.ts",
-    "web": "pnpm --filter web dev",
+    "hello": "tsx backend/scripts/hello.ts",
+    "wallets": "tsx backend/scripts/gen-wallets.ts",
+    "worker": "tsx backend/worker/src/index.ts",
+    "cli": "tsx backend/cli/src/index.ts",
+    "web": "pnpm --filter frontend dev",
     "typecheck": "tsc -b",
     "test": "vitest run"
   }

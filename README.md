@@ -11,3 +11,4 @@ Arkiv, and you reveal it only if a worker censors you.
 Built for the *Arkiv: Global Tour Stop* hackathon on the Tiramisu testnet. MIT licensed.
 
 > Setup instructions coming soon. Design: [docs/technical-plan.md](docs/technical-plan.md).
+> Repo layout and deployment: [docs/structure.md](docs/structure.md).

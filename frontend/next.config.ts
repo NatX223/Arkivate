@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // @arkivate/core ships TypeScript source; only import it from server code (it reads secrets).
+  // @arkivate/core ships TypeScript source. Import only "@arkivate/core", never
+  // "@arkivate/core/server" (it reads env and private keys).
   transpilePackages: ["@arkivate/core"],
 };
 

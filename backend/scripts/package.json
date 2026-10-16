@@ -1,0 +1,12 @@
+{
+  "name": "@arkivate/scripts",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "@arkiv-network/sdk": "0.8.1",
+    "@arkivate/core": "workspace:^",
+    "viem": "2.56.3"
+  }
+}

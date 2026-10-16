@@ -5,7 +5,7 @@ Tooling: pnpm 9.15.9 · TypeScript 5.9.3 · Windows 11 (Git Bash)
 
 ## F1 — Duplicate SDK copies make `u64()` / `ExpirationTime` values "not assignable" to the SDK's own types
 - **When:** 2026-10-15 23:45 BST
-- **What I did:** In a pnpm workspace, added `@arkiv-network/sdk@0.8.1` to `packages/core` while the
+- **What I did:** In a pnpm workspace, added `@arkiv-network/sdk@0.8.1` to `backend/core` (then `packages/core`) while the
   root had TypeScript 7.0.2, then pinned root TypeScript to 5.9.3 and imported the SDK from a root
   script as well. Ran `tsc -b`.
 - **Expected:** `createEntity({ attributes: { created_at: u64(Date.now()) }, expires: ExpirationTime.fromMinutes(10) })` typechecks.
@@ -29,7 +29,7 @@ Tooling: pnpm 9.15.9 · TypeScript 5.9.3 · Windows 11 (Git Bash)
 - **Expected:** An `accessKey` option, or a JSDoc example showing the header (the keyless RPC is rate-limited to ≈100 queries/hour/IP).
 - **Actual:** There is no mention of access keys anywhere in `dist/` (`grep -ri "api-key\|apikey\|access.key"` finds nothing). Every example uses bare `http()`.
 - **Repro:** `grep -rni "api-key\|apikey\|access" node_modules/@arkiv-network/sdk/dist/*.d.ts`
-- **Workaround:** `http(url, { fetchOptions: { headers: { "X-API-KEY": key } } })` in `packages/core/src/clients.ts`. The browser `WebSocket` / Node 22 global `WebSocket` cannot set custom headers, so it is still unclear how the key applies to the WS transport used by `watchEntityEvents`. To be confirmed when `pnpm hello` step 7 runs.
+- **Workaround:** `http(url, { fetchOptions: { headers: { "X-API-KEY": key } } })` in `backend/core/src/reader.ts`. The browser `WebSocket` / Node 22 global `WebSocket` cannot set custom headers, so it is still unclear how the key applies to the WS transport used by `watchEntityEvents`. To be confirmed when `pnpm hello` step 7 runs.
 - **Suggestion:** Export a helper such as `arkivTransport({ accessKey })` for HTTP and WS, and document the header name and the WS story on the Hub API-keys page.
 
 ## F3 — `tiramisu` chain object has no `blockExplorers`
@@ -38,5 +38,5 @@ Tooling: pnpm 9.15.9 · TypeScript 5.9.3 · Windows 11 (Git Bash)
 - **Expected:** viem chain definitions normally include the explorer, so `viem` utilities and wallets can link to transactions.
 - **Actual:** `defineChain({ id: 7738577, name: "Tiramisu", ... })` in `dist/chains-*.js` sets no `blockExplorers` (the field is `undefined`).
 - **Repro:** `import { tiramisu } from "@arkiv-network/sdk/chains"; console.log(tiramisu.blockExplorers) // undefined`
-- **Workaround:** Hardcoded `https://tiramisu.explorer.arkiv.network` in `packages/core/src/constants.ts`.
+- **Workaround:** Hardcoded `https://tiramisu.explorer.arkiv.network` in `backend/core/src/constants.ts`.
 - **Suggestion:** Add `blockExplorers: { default: { name: "Arkiv Explorer", url: "https://tiramisu.explorer.arkiv.network" } }`.

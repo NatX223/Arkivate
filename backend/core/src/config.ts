@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { z } from "zod";
+import { TIRAMISU_RPC_HTTP, TIRAMISU_RPC_WS } from "./constants.js";
 
 const privateKey = z
   .string()
@@ -11,14 +12,18 @@ const optional = <T extends z.ZodType>(schema: T) =>
   z.preprocess((v) => (v === "" ? undefined : v), schema.optional());
 
 const EnvSchema = z.object({
-  ARKIV_RPC_HTTP: z.url().default("https://rpc.tiramisu.db-chain.testnet.arkiv.network"),
-  ARKIV_RPC_WS: z.url().default("wss://rpc.tiramisu.db-chain.testnet.arkiv.network"),
+  ARKIV_RPC_HTTP: z.url().default(TIRAMISU_RPC_HTTP),
+  ARKIV_RPC_WS: z.url().default(TIRAMISU_RPC_WS),
   ARKIV_ACCESS_KEY: optional(z.string()),
   OWNER_PRIVATE_KEY: optional(privateKey),
   SEALED_OWNER_PRIVATE_KEY: optional(privateKey),
-  WORKER_A_PRIVATE_KEY: optional(privateKey),
-  WORKER_B_PRIVATE_KEY: optional(privateKey),
+  // One worker identity per deployment (worker-a, worker-b), see docs/structure.md.
+  WORKER_NAME: z.string().default("worker-local"),
+  WORKER_PRIVATE_KEY: optional(privateKey),
   WORKER_PORT: z.coerce.number().int().positive().default(8787),
+  /** Set by Cloud Run; takes precedence over WORKER_PORT. */
+  PORT: optional(z.coerce.number().int().positive()),
+  DATA_DIR: optional(z.string()),
   PUBLIC_ENDPOINT: optional(z.url()),
   TELEGRAM_BOT_TOKEN: optional(z.string()),
 });
@@ -26,7 +31,7 @@ const EnvSchema = z.object({
 export type Env = z.infer<typeof EnvSchema>;
 export type EnvKey = keyof Env;
 
-/** Walk up from cwd to find the repo's .env, so scripts work from any package dir. */
+/** Walk up from cwd to find the repo's .env. Missing is fine: deployments use real env vars. */
 function findEnvFile(): string | undefined {
   let dir = process.cwd();
   for (;;) {

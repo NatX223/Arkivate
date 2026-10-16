@@ -1,0 +1,12 @@
+**/node_modules
+**/dist
+**/.next
+**/data
+**/*.tsbuildinfo
+.env
+.env*
+!.env.example
+.git
+frontend
+docs
+arkiv

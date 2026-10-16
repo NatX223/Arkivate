@@ -1,6 +1,9 @@
 export const PROJECT = "arkivate";
 export const CHAIN_ID = 7738577;
 
+export const TIRAMISU_RPC_HTTP = "https://rpc.tiramisu.db-chain.testnet.arkiv.network";
+export const TIRAMISU_RPC_WS = "wss://rpc.tiramisu.db-chain.testnet.arkiv.network";
+
 /** Burn address: entities transferred here can never be deleted or modified again. */
 export const DEAD = "0x000000000000000000000000000000000000dEaD" as const;
 

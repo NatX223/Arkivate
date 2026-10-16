@@ -3,16 +3,8 @@ import { ExpirationTime, jsonToPayload } from "@arkiv-network/sdk";
 import { u64 } from "@arkiv-network/sdk/attr";
 import { eq } from "@arkiv-network/sdk/query";
 import { formatEther, type Hex } from "viem";
-import {
-  CHAIN_ID,
-  DEAD,
-  PROJECT,
-  loadConfig,
-  makeReader,
-  makeWallet,
-  makeWsReader,
-  txUrl,
-} from "@arkivate/core";
+import { CHAIN_ID, DEAD, PROJECT, txUrl } from "@arkivate/core";
+import { loadConfig, makeReader, makeWallet, makeWsReader } from "@arkivate/core/server";
 
 const step = (n: number, msg: string) => console.log(`\n[${n}/7] ${msg}`);
 const ok = (msg: string) => console.log(`  ✓ ${msg}`);

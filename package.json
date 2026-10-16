@@ -8,21 +8,18 @@
     "node": ">=22"
   },
   "scripts": {
-    "hello": "tsx scripts/hello.ts",
-    "wallets": "tsx scripts/gen-wallets.ts",
-    "worker": "tsx packages/worker/src/index.ts",
-    "cli": "tsx packages/cli/src/index.ts",
-    "web": "pnpm --filter web dev",
+    "hello": "tsx backend/scripts/hello.ts",
+    "wallets": "tsx backend/scripts/gen-wallets.ts",
+    "worker": "tsx backend/worker/src/index.ts",
+    "cli": "tsx backend/cli/src/index.ts",
+    "web": "pnpm --filter frontend dev",
     "typecheck": "tsc -b",
     "test": "vitest run"
   },
   "devDependencies": {
-    "@arkiv-network/sdk": "0.8.1",
-    "@arkivate/core": "workspace:*",
     "@types/node": "22",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
-    "viem": "2.56.3",
     "vitest": "^5.0.5"
   },
   "pnpm": {

@@ -185,10 +185,11 @@ All are Arkiv native entity ops (txs to `0x44…44`, gas in testnet GLM). **No s
 
 ```
 arkivate/
-├─ packages/core    # spec types (zod), canonical hash, spec → query, verify logic
-├─ packages/worker  # daemon: WS + pollers + POST /sealed   → npx arkivate-worker
-├─ packages/cli     # create | pause | seal | handoff | reveal | verify | demo-feed
-├─ apps/web         # Next.js: triggers, receipts, workers, verifier
+├─ backend/core     # spec types (zod), canonical hash, spec → query, verify logic
+├─ backend/worker   # daemon: WS + pollers + POST /sealed   → npx arkivate-worker
+├─ backend/cli      # create | pause | seal | handoff | reveal | verify | demo-feed
+├─ backend/scripts  # dev-only: hello smoke test, wallet generator
+├─ frontend         # Next.js: triggers, receipts, workers, verifier
 ├─ arkiv/schema.md · arkiv/friction.md
 └─ LICENSE (MIT) · README.md · WALLETS.md
 ```
@@ -249,7 +250,7 @@ export const wallet = createWalletClient({ chain: tiramisu,
   account: privateKeyToAccount(process.env.WORKER_PRIVATE_KEY as `0x${string}`) });
 
 // commitment — both parts hex: concat([Uint8Array, hexString]) silently drops the salt
-// (caught by packages/core/src/commit.test.ts; see packages/core/src/commit.ts)
+// (caught by backend/core/src/commit.test.ts; see backend/core/src/commit.ts)
 export const commit = (spec: unknown, salt32: `0x${string}`) =>
   keccak256(concat([stringToHex(canonicalize(spec)!), salt32]));
 
