@@ -43,3 +43,18 @@ Tooling: pnpm 9.15.9 · TypeScript 5.9.3 · Windows 11 (Git Bash)
 - **Repro:** `import { tiramisu } from "@arkiv-network/sdk/chains"; console.log(tiramisu.blockExplorers) // undefined`
 - **Workaround:** Hardcoded `https://tiramisu.explorer.arkiv.network` in `backend/core/src/constants.ts`.
 - **Suggestion:** Add `blockExplorers: { default: { name: "Arkiv Explorer", url: "https://tiramisu.explorer.arkiv.network" } }`.
+
+## F4 — Filtered `arkiv_getEntityCount` is undocumented, and an unknown param silently returns the chain-wide count
+- **When:** 2026-10-16 ~14:00 BST
+- **What I did:** Needed a filtered count for the `on_count` condition. `client.getEntityCount()` takes no arguments, and `ArkivRpcSchema` declares `arkiv_getEntityCount` with `Parameters?: []`. Probed the raw RPC.
+- **Expected:** Either a documented filtered form, or a clear error for unsupported params.
+- **Actual:** A filtered form exists but is undocumented. Results against Tiramisu, compared with a full `select()` walk of the same query (9 entities):
+  - `params: []` → `9570` (chain-wide)
+  - `params: ["<query>"]` → `Invalid parameters were provided to the RPC method.`
+  - `params: [{ query }]` → `9` ✓
+  - `params: [{ query, atBlock: "0x…" }]` → `9` ✓
+  - `params: [{ query, block: "0x…" }]` (the shape our design doc assumed) → `Invalid parameters…`
+  - `params: [{ nonsense: 1 }]` → `9572`, **the chain-wide count, with no error**. A typo in the key name (`querry`) turns "count matching" into "count everything" silently.
+- **Repro:** `client.request({ method: "arkiv_getEntityCount", params: [{ nonsense: 1 }] })`
+- **Workaround:** Call the raw RPC with exactly `[{ query, atBlock }]`, built from the SDK's `render()`, and sanity-check that the result is below the unfiltered count.
+- **Suggestion:** Expose `getEntityCount({ where, atBlock })` in the SDK, add the params to `ArkivRpcSchema`, and have the node reject unknown keys.

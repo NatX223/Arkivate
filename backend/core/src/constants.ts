@@ -20,5 +20,10 @@ export const ENTITY_TYPES = {
   acceptance: "acceptance",
   receipt: "receipt",
   reveal: "reveal",
+  /** Synthetic data feed for demos and tests (`arkivate demo-feed`). */
+  demo_feed: "demo_feed",
 } as const;
 export type EntityType = (typeof ENTITY_TYPES)[keyof typeof ENTITY_TYPES];
+
+/** Version string written on worker entities. */
+export const WORKER_VERSION = "0.1.0";
