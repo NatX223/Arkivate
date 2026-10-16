@@ -31,6 +31,13 @@ export interface EngineOptions {
 }
 
 const lower = (a: string) => a.toLowerCase();
+
+/**
+ * Head start per rank. Must exceed detect → write → mined (~5–7 s measured on Tiramisu), or a
+ * backup worker re-checks before the primary's receipt lands and fires a duplicate.
+ */
+const FIRE_SLOT_MS = 12_000;
+const MAX_FIRE_DELAY_MS = 36_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export class Engine {
@@ -74,12 +81,9 @@ export class Engine {
     this.triggers = new Map(triggers.map((t) => [t.key, t]));
     for (const i of invalid) this.o.log.debug({ trigger: i.key, error: i.error }, "ignoring invalid trigger");
 
-    const workers = await listWorkers(this.o.reader);
-    const addrs = [...new Set([...workers.map((w) => lower(w.creator)), lower(this.o.address)])].sort();
-    this.trustedWorkers = new Set(addrs);
-    this.rank = Math.max(0, addrs.indexOf(lower(this.o.address)));
+    const workers = await this.refreshWorkers();
     this.o.log.info(
-      { triggers: this.triggers.size, invalid: invalid.length, workers: workers.length, rank: this.rank },
+      { triggers: this.triggers.size, invalid: invalid.length, workers, rank: this.rank },
       "refreshed",
     );
 
@@ -88,6 +92,14 @@ export class Engine {
       const matches = await recentMatches(this.o.reader, t.spec.cond, t.createdAt);
       for (const m of matches) await this.fire(t, onCreateFiring(m));
     }
+  }
+
+  private async refreshWorkers(): Promise<number> {
+    const workers = await listWorkers(this.o.reader);
+    const addrs = [...new Set([...workers.map((w) => lower(w.creator)), lower(this.o.address)])].sort();
+    this.trustedWorkers = new Set(addrs);
+    this.rank = Math.max(0, addrs.indexOf(lower(this.o.address)));
+    return workers.length;
   }
 
   /** WS push path: buffer created keys, flushed in batches so each trigger costs one query. */
@@ -149,7 +161,10 @@ export class Engine {
   /** Has this (trigger, epoch) already got a receipt from a worker we trust? */
   private async peerReceipt(trigger: Hex, epoch: string) {
     const receipts = await findReceipts(this.o.reader, trigger, epoch);
-    return receipts.find((r) => this.trustedWorkers.has(lower(r.creator)));
+    const trusted = () => receipts.find((r) => this.trustedWorkers.has(lower(r.creator)));
+    // A receipt from an unknown creator may be a worker that registered since our last refresh.
+    if (receipts.length > 0 && !trusted()) await this.refreshWorkers();
+    return trusted();
   }
 
   private async fire(t: TriggerRecord, f: Firing) {
@@ -161,7 +176,7 @@ export class Engine {
       let peer = await this.peerReceipt(t.key, f.epoch);
       if (!peer) {
         // Lower-ranked workers go first; the rest wait, then re-check before spending gas.
-        if (this.rank > 0) await sleep(Math.min(this.rank * 2_000, 8_000) + Math.random() * 500);
+        if (this.rank > 0) await sleep(Math.min(this.rank * FIRE_SLOT_MS, MAX_FIRE_DELAY_MS) + Math.random() * 1_000);
         peer = await this.peerReceipt(t.key, f.epoch);
       }
       if (peer) {

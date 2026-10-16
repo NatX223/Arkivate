@@ -101,6 +101,12 @@ Dedupe: before writing, a worker looks up receipts for `(trigger, epoch)` and sk
 from a **registered worker** (a creator with a live `worker` entity). Receipts from unregistered
 addresses are ignored, so they can't be used to suppress firings.
 
+Workers rank themselves by sorted address among live `worker` entities. Rank 0 fires at once; rank
+*n* waits *n* × 12 s (max 36 s) and re-checks first. The slot has to exceed detect → write → mined,
+which measured ~5–7 s on Tiramisu: with a 2 s slot, two workers both fired the same epoch. Two
+workers can still both fire if the primary stalls just past its slot. The first receipt by block
+is canonical, and consumers should treat `(trigger, epoch)` as idempotent.
+
 ## demo_feed
 
 Synthetic data emitted by `arkivate demo-feed` to drive triggers in demos and tests. No real data.
