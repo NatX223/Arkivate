@@ -158,6 +158,13 @@ export type TriggerSpec = z.infer<typeof TriggerSpec>;
 export const PublicTriggerSpec = SpecShape.extend({ action: PublicAction }).superRefine(checkCombination);
 export type PublicTriggerSpec = z.infer<typeof PublicTriggerSpec>;
 
+/**
+ * A sealed spec: any condition, delivered privately (`webhook` / `telegram`). The destination
+ * itself is NOT part of the spec; it never touches Arkiv, not even hashed.
+ */
+export const SealedTriggerSpec = SpecShape.extend({ action: SealedAction }).superRefine(checkCombination);
+export type SealedTriggerSpec = z.infer<typeof SealedTriggerSpec>;
+
 /** Parse with a readable, path-qualified error. */
 export function parseSpec<T extends z.ZodType>(schema: T, input: unknown): z.infer<T> {
   const parsed = schema.safeParse(input);

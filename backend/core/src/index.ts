@@ -9,3 +9,5 @@ export * from "./entities.js";
 export * from "./conditions.js";
 export * from "./records.js";
 export * from "./expiry.js";
+export * from "./sealed.js";
+export * from "./verify.js";
