@@ -11,16 +11,23 @@ import type { TriggerSpec } from "./spec.js";
 export type TriggerStatus = "active" | "paused";
 
 export function triggerAttributes(spec: TriggerSpec, status: TriggerStatus = "active") {
+  const watch = "watch" in spec.cond ? spec.cond.watch : undefined;
   return {
     project: PROJECT,
     entity_type: ENTITY_TYPES.trigger,
     cond_type: str(spec.cond.type),
+    action_type: str(spec.action.type),
     status: str(status),
     created_at: u64(Date.now()),
+    // Lets anyone find every trigger watching a given entity.
+    ...(watch && "entity_key" in watch ? { watch_key: key(watch.entity_key as Hex) } : {}),
   };
 }
 
 export type ReceiptMode = "public" | "sealed";
+
+/** Result of a Reactivate (`extend`) action. Absent for `notice` receipts. */
+export type ReceiptOutcome = "extended" | "not_extendable" | "cap_reached";
 
 export interface ReceiptFields {
   trigger: Hex;
@@ -28,6 +35,11 @@ export interface ReceiptFields {
   epoch: string;
   firedBlock: bigint;
   evidenceBlock: bigint;
+  /** The watched entity this firing is about (expiry-family conditions). */
+  subject?: Hex | undefined;
+  outcome?: ReceiptOutcome | undefined;
+  oldExpiresAt?: bigint | undefined;
+  newExpiresAt?: bigint | undefined;
 }
 
 export function receiptAttributes(r: ReceiptFields) {
@@ -39,6 +51,10 @@ export function receiptAttributes(r: ReceiptFields) {
     epoch: str(r.epoch),
     fired_block: u64(r.firedBlock),
     evidence_block: u64(r.evidenceBlock),
+    ...(r.subject ? { subject: key(r.subject) } : {}),
+    ...(r.outcome ? { outcome: str(r.outcome) } : {}),
+    ...(r.oldExpiresAt !== undefined ? { old_expires_at: u64(r.oldExpiresAt) } : {}),
+    ...(r.newExpiresAt !== undefined ? { new_expires_at: u64(r.newExpiresAt) } : {}),
   };
 }
 
@@ -63,7 +79,12 @@ export interface WorkerPayload {
   endpoint: string;
 }
 
-export type DemoFeedKind = "heartbeat" | "event";
+/**
+ * heartbeat / event: Phase 1 conditions. listing: short-lived and extendable by anyone (the
+ * keep-alive demo). canary: short-lived and *not* extendable, so it will expire.
+ */
+export type DemoFeedKind = "heartbeat" | "event" | "listing" | "canary";
+export const DEMO_FEED_KINDS = ["heartbeat", "event", "listing", "canary"] as const;
 
 export function demoFeedAttributes(kind: DemoFeedKind, seq: number) {
   return {

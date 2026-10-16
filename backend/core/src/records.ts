@@ -85,6 +85,33 @@ export async function findReceipts(reader: Reader, trigger: Hex, epoch: string):
   });
 }
 
+/**
+ * Receipts for one watched entity under one trigger with a given outcome, e.g. every `extended`
+ * receipt so far, to enforce `max_extensions` across all workers.
+ */
+export async function findSubjectReceipts(
+  reader: Reader,
+  trigger: Hex,
+  subject: Hex,
+  outcome: string,
+): Promise<ReceiptRef[]> {
+  const out: ReceiptRef[] = [];
+  const query = reader
+    .select({ key: true, creator: true, attributes: { fired_block: true } })
+    .where(
+      ...ns(ENTITY_TYPES.receipt),
+      eq("trigger", key(trigger)),
+      eq("subject", key(subject)),
+      eq("outcome", str(outcome)),
+    )
+    .limit(200);
+  for await (const e of query) {
+    const fired = e.attributes.fired_block;
+    out.push({ key: e.key, creator: e.creator, firedBlock: fired && typeof fired.value === "bigint" ? fired.value : undefined });
+  }
+  return out;
+}
+
 export interface WorkerRecord {
   key: Hex;
   creator: Hex;

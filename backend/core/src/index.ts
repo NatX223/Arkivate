@@ -8,3 +8,4 @@ export * from "./query.js";
 export * from "./entities.js";
 export * from "./conditions.js";
 export * from "./records.js";
+export * from "./expiry.js";

@@ -1,7 +1,13 @@
 import { addr, bool, i32, key, str, u64, type ArkivValue } from "@arkiv-network/sdk/attr";
 import { and, eq, gt, gte, lt, lte, startsWith, type Expression } from "@arkiv-network/sdk/query";
 import type { Hex } from "viem";
-import type { ComparisonOp, Condition, Predicate, TypedLiteral } from "./spec.js";
+import type { ComparisonOp, Predicate, TypedLiteral } from "./spec.js";
+
+/** Anything that filters by query: on_create / on_silence / on_count conditions, or a query watch. */
+export interface QueryFilter {
+  where: readonly Predicate[];
+  created_by?: string | undefined;
+}
 
 export function toValue(lit: TypedLiteral): ArkivValue {
   if ("str" in lit) return str(lit.str);
@@ -23,7 +29,7 @@ export function toExpression([op, name, lit]: Predicate): Expression {
  * The condition's filter as one SDK expression, including the trusted creator. Render it with
  * `String(expr)` to get the exact query text the node parses (also what the raw count RPC takes).
  */
-export function conditionExpression(cond: Condition, extra: Expression[] = []): Expression {
+export function conditionExpression(cond: QueryFilter, extra: Expression[] = []): Expression {
   const parts = cond.where.map(toExpression);
   if (cond.created_by) parts.push(eq("$creator", addr(cond.created_by as Hex)));
   return and([...parts, ...extra]);

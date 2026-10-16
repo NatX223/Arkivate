@@ -25,6 +25,14 @@ const EnvSchema = z.object({
   PORT: optional(z.coerce.number().int().positive()),
   DATA_DIR: optional(z.string()),
   PUBLIC_ENDPOINT: optional(z.url()),
+  /** Spam/gas guard: only run triggers created by these addresses. Empty = accept all. */
+  TRIGGER_CREATORS: z
+    .string()
+    .default("")
+    .transform((v) => v.split(",").map((a) => a.trim().toLowerCase()).filter(Boolean))
+    .pipe(z.array(z.string().regex(/^0x[0-9a-f]{40}$/, "must be comma-separated 0x addresses"))),
+  /** Spam/gas guard: receipts (each one costs gas) a worker writes per trigger per hour. */
+  MAX_RECEIPTS_PER_TRIGGER_PER_HOUR: z.coerce.number().int().positive().default(12),
   TELEGRAM_BOT_TOKEN: optional(z.string()),
 });
 

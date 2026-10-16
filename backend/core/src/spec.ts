@@ -65,24 +65,97 @@ export const OnCount = z
   })
   .strict();
 
-export const Condition = z.discriminatedUnion("type", [OnCreate, OnSilence, OnCount]);
+/**
+ * What an expiry-family condition watches: one entity by key, or every entity matching a query.
+ * The query form is the same `{ where, created_by? }` the other conditions use.
+ */
+export const EntityWatch = z.object({ entity_key: hexKey }).strict();
+export const QueryWatch = z.object({ ...base }).strict();
+export const Watch = z.union([EntityWatch, QueryWatch]);
+export type Watch = z.infer<typeof Watch>;
+
+/**
+ * Which deadline the expiry conditions measure against:
+ * - `follow`: the entity's current `expiresAt`. An extension moves the deadline.
+ * - `pinned`: `expiresAt` when the trigger first saw the entity. Extensions (by anyone) do not
+ *   move it, so a third party cannot keep postponing the deadline.
+ */
+export const Deadline = z.enum(["follow", "pinned"]);
+
+export const OnExpiring = z
+  .object({
+    type: z.literal("on_expiring"),
+    watch: Watch,
+    lead_blocks: z.number().int().positive(),
+    deadline: Deadline.default("follow"),
+  })
+  .strict();
+
+export const OnExpire = z
+  .object({ type: z.literal("on_expire"), watch: Watch, deadline: Deadline.default("follow") })
+  .strict();
+
+export const OnExtend = z.object({ type: z.literal("on_extend"), watch: Watch }).strict();
+export const OnDelete = z.object({ type: z.literal("on_delete"), watch: Watch }).strict();
+
+export const Condition = z.discriminatedUnion("type", [
+  OnCreate,
+  OnSilence,
+  OnCount,
+  OnExpiring,
+  OnExpire,
+  OnExtend,
+  OnDelete,
+]);
 export type Condition = z.infer<typeof Condition>;
 export type ConditionType = Condition["type"];
+export const EXPIRY_CONDITIONS = ["on_expiring", "on_expire", "on_extend", "on_delete"] as const;
+export type ExpiryCondition = Extract<Condition, { type: (typeof EXPIRY_CONDITIONS)[number] }>;
+export const isExpiryCondition = (c: Condition): c is ExpiryCondition =>
+  (EXPIRY_CONDITIONS as readonly string[]).includes(c.type);
 
-export const PublicAction = z.object({ type: z.literal("notice") }).strict();
+export const MAX_EXTENSIONS_CAP = 100;
+
+export const NoticeAction = z.object({ type: z.literal("notice") }).strict();
+/** Reactivate: extend the watched entity before it expires. Public, because it acts on-chain. */
+export const ExtendAction = z
+  .object({
+    type: z.literal("extend"),
+    extend_blocks: z.number().int().positive(),
+    max_extensions: z.number().int().positive().max(MAX_EXTENSIONS_CAP),
+  })
+  .strict();
+export const PublicAction = z.discriminatedUnion("type", [NoticeAction, ExtendAction]);
 export const SealedAction = z.object({ type: z.enum(["webhook", "telegram"]) }).strict();
 
-export const TriggerSpec = z
+const SpecShape = z
   .object({
     v: z.literal(1),
     cond: Condition,
     action: z.union([PublicAction, SealedAction]),
   })
   .strict();
+
+/**
+ * Combinations the schema alone can't express. `extend` only makes sense before expiry:
+ * `on_extend` + `extend` would loop (our extension re-triggers it), and after `on_expire` /
+ * `on_delete` there is nothing left to extend.
+ */
+function checkCombination(spec: z.infer<typeof SpecShape>, ctx: z.RefinementCtx) {
+  if (spec.action.type !== "extend") return;
+  if (spec.cond.type === "on_expiring") return;
+  const reason =
+    spec.cond.type === "on_extend"
+      ? "on_extend + extend is a loop: each extension would fire the trigger again"
+      : `extend is only valid with on_expiring (got ${spec.cond.type})`;
+  ctx.addIssue({ code: "custom", path: ["action", "type"], message: reason });
+}
+
+export const TriggerSpec = SpecShape.superRefine(checkCombination);
 export type TriggerSpec = z.infer<typeof TriggerSpec>;
 
-/** A spec that may be posted publicly: its action is always `notice` (receipt only). */
-export const PublicTriggerSpec = TriggerSpec.extend({ action: PublicAction });
+/** A spec that may be posted publicly: `notice` (receipt only) or `extend` (Reactivate). */
+export const PublicTriggerSpec = SpecShape.extend({ action: PublicAction }).superRefine(checkCombination);
 export type PublicTriggerSpec = z.infer<typeof PublicTriggerSpec>;
 
 /** Parse with a readable, path-qualified error. */
