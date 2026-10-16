@@ -78,8 +78,16 @@ export class ChainWriter {
     );
   }
 
-  /** Receipt = readonly create + ownership burn to 0x…dEaD, atomically, so it can never vanish. */
-  writeReceipt(fields: ReceiptFields, body: PublicReceiptPayload) {
+  /**
+   * Receipt = readonly create + ownership burn to 0x…dEaD, atomically, so it can never vanish.
+   * With `extension` (Reactivate), the extend rides in the same batch: the entity is extended if
+   * and only if the receipt exists.
+   */
+  writeReceipt(
+    fields: ReceiptFields,
+    body: PublicReceiptPayload,
+    extension?: { entityKey: Hex; expiresAt: bigint },
+  ) {
     return this.serial(async () => {
       const [predicted] = await this.reader.predictEntityKeys({ owner: this.address, count: 1 });
       if (!predicted) throw new Error("predictEntityKeys returned nothing");
@@ -94,6 +102,9 @@ export class ChainWriter {
             flags: { readonly: true, permissionlessExtension: true },
           },
         ],
+        ...(extension
+          ? { extensions: [{ entityKey: extension.entityKey, expires: ExpirationTime.atBlock(extension.expiresAt) }] }
+          : {}),
         ownershipChanges: [{ entityKey: predicted.key, newOwner: DEAD }],
       });
       if (!batch.createdEntities.includes(predicted.key)) {

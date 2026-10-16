@@ -16,6 +16,8 @@ export interface Firing {
   evidenceBlock: bigint;
   matchedKeys: Hex[];
   summary: string;
+  /** The watched entity (expiry family). The Reactivate action extends this one. */
+  subject?: Hex;
 }
 
 export interface Match {

@@ -2,18 +2,22 @@ import {
   evalOnCount,
   evalOnSilence,
   findReceipts,
+  findSubjectReceipts,
   listWorkers,
   loadTriggers,
   matchCandidates,
   onCreateFiring,
+  readLive,
   recentMatches,
   type Firing,
   type Reader,
+  type ReceiptOutcome,
   type TriggerRecord,
 } from "@arkivate/core";
 import type { Logger } from "pino";
 import type { Hex } from "viem";
 import type { ChainWriter } from "./chain.js";
+import { ExpiryWatcher } from "./expiry.js";
 import { firedId, type Store } from "./store.js";
 
 export interface EngineOptions {
@@ -25,12 +29,18 @@ export interface EngineOptions {
   address: Hex;
   /** Null while unfunded: the engine evaluates everything and logs "would fire" instead. */
   writer: () => ChainWriter | null;
+  /** Lowercased trigger creators to accept. Empty = accept all. */
+  triggerCreators: readonly string[];
+  /** Receipts (each one costs gas) this worker writes per trigger per hour. */
+  maxReceiptsPerTriggerPerHour: number;
   pollMs?: number;
+  sweepMs?: number;
   refreshMs?: number;
   flushMs?: number;
 }
 
 const lower = (a: string) => a.toLowerCase();
+const HOUR_MS = 60 * 60_000;
 
 /**
  * Head start per rank. Must exceed detect → write → mined (~5–7 s measured on Tiramisu), or a
@@ -39,6 +49,12 @@ const lower = (a: string) => a.toLowerCase();
 const FIRE_SLOT_MS = 12_000;
 const MAX_FIRE_DELAY_MS = 36_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+interface ReactivatePlan {
+  outcome: ReceiptOutcome;
+  oldExpiresAt?: bigint;
+  newExpiresAt?: bigint;
+}
 
 export class Engine {
   private triggers = new Map<Hex, TriggerRecord>();
@@ -49,14 +65,30 @@ export class Engine {
   private inflight = new Set<string>();
   /** Dry-run firings, kept in memory only so they still fire for real once funded. */
   private dryFired = new Set<string>();
+  /** Per-trigger timestamps of receipts we wrote in the last hour (gas cap). */
+  private recent = new Map<Hex, number[]>();
   private timers: NodeJS.Timeout[] = [];
   private unwatch: (() => void) | undefined;
-  readonly stats = { firedSelf: 0, skippedPeer: 0, wouldFire: 0, errors: 0 };
+  private readonly expiry: ExpiryWatcher;
+  readonly stats = {
+    firedSelf: 0,
+    skippedPeer: 0,
+    wouldFire: 0,
+    skippedByCap: 0,
+    triggersNotAllowed: 0,
+    errors: 0,
+  };
 
-  constructor(private readonly o: EngineOptions) {}
+  constructor(private readonly o: EngineOptions) {
+    this.expiry = new ExpiryWatcher(o.reader, o.store, o.log, (t, f) => this.fire(t, f));
+  }
 
   get triggerCount() {
     return this.triggers.size;
+  }
+
+  get watchedCount() {
+    return this.expiry.watchedCount;
   }
 
   async start() {
@@ -66,8 +98,10 @@ export class Engine {
       this.timers.push(setInterval(() => void fn().catch((e) => this.fail("timer", e)), ms));
     every(this.o.flushMs ?? 2_000, () => this.flush());
     every(this.o.pollMs ?? 30_000, () => this.poll());
+    every(this.o.sweepMs ?? 10_000, () => this.sweep());
     every(this.o.refreshMs ?? 5 * 60_000, () => this.refresh());
     await this.poll();
+    await this.sweep();
   }
 
   stop() {
@@ -75,15 +109,27 @@ export class Engine {
     this.unwatch?.();
   }
 
-  /** Reload triggers + worker set, then run the on_create catch-up for anything WS missed. */
+  /** Reload triggers + worker set + expiry index, then catch up on_create for anything WS missed. */
   async refresh() {
     const { triggers, invalid } = await loadTriggers(this.o.reader, "active");
-    this.triggers = new Map(triggers.map((t) => [t.key, t]));
+    const allow = this.o.triggerCreators;
+    const accepted = allow.length === 0 ? triggers : triggers.filter((t) => allow.includes(lower(t.creator)));
+    this.stats.triggersNotAllowed = triggers.length - accepted.length;
+    this.triggers = new Map(accepted.map((t) => [t.key, t]));
     for (const i of invalid) this.o.log.debug({ trigger: i.key, error: i.error }, "ignoring invalid trigger");
 
     const workers = await this.refreshWorkers();
+    const head = await this.o.reader.getBlockNumber();
+    await this.expiry.rebuild([...this.triggers.values()], head);
     this.o.log.info(
-      { triggers: this.triggers.size, invalid: invalid.length, workers, rank: this.rank },
+      {
+        triggers: this.triggers.size,
+        notAllowed: this.stats.triggersNotAllowed,
+        invalid: invalid.length,
+        watched: this.expiry.watchedCount,
+        workers,
+        rank: this.rank,
+      },
       "refreshed",
     );
 
@@ -102,22 +148,26 @@ export class Engine {
     return workers.length;
   }
 
-  /** WS push path: buffer created keys, flushed in batches so each trigger costs one query. */
+  /** WS push path. Created keys are buffered and flushed in batches (one query per trigger). */
   private watch() {
+    const guard = (where: string, p: Promise<void>) => void p.catch((e) => this.fail(where, e));
     this.unwatch = this.o.wsReader.watchEntityEvents({
       onEntityCreated: (e) => {
-        // Cheap prefilter: if every on_create trigger names a creator, ignore everyone else.
+        // Cheap prefilter: if every query names a creator, ignore everyone else.
         // At creation the event's owner is the creator (a burn shows up as a later transfer).
-        const creators = this.onCreateCreators();
+        const creators = this.createdCreators();
         if (creators && !creators.has(lower(e.owner))) return;
         this.pending.add(e.entityKey);
       },
+      onExpiryExtended: (e) => guard("ws extend", this.expiry.onExtended(e.entityKey, e.expiresAt, e.blockNumber)),
+      onEntityDeleted: (e) => guard("ws delete", this.expiry.onDeleted(e.entityKey, e.blockNumber)),
       onError: (err) => this.fail("ws", err),
     });
   }
 
-  private onCreateCreators(): Set<string> | null {
-    const out = new Set<string>();
+  private createdCreators(): Set<string> | null {
+    const out = this.expiry.queryWatchCreators();
+    if (!out) return null;
     for (const t of this.triggers.values()) {
       if (t.spec.cond.type !== "on_create") continue;
       if (!t.spec.cond.created_by) return null;
@@ -137,6 +187,7 @@ export class Engine {
         if (m.createdAt > t.createdAt) await this.fire(t, onCreateFiring(m));
       }
     }
+    await this.expiry.onCreated(keys, await this.o.reader.getBlockNumber());
   }
 
   /** Pollers for conditions no event can signal: silence and counts. */
@@ -158,6 +209,11 @@ export class Engine {
     }
   }
 
+  /** Expiry sweep (~5 blocks): Arkiv has no expiration event, so deadlines are checked here. */
+  private async sweep() {
+    await this.expiry.sweep(await this.o.reader.getBlockNumber());
+  }
+
   /** Has this (trigger, epoch) already got a receipt from a worker we trust? */
   private async peerReceipt(trigger: Hex, epoch: string) {
     const receipts = await findReceipts(this.o.reader, trigger, epoch);
@@ -165,6 +221,36 @@ export class Engine {
     // A receipt from an unknown creator may be a worker that registered since our last refresh.
     if (receipts.length > 0 && !trusted()) await this.refreshWorkers();
     return trusted();
+  }
+
+  /** Gas cap: true if we may write another receipt for this trigger now. */
+  private underCap(trigger: Hex): boolean {
+    const now = Date.now();
+    const times = (this.recent.get(trigger) ?? []).filter((t) => now - t < HOUR_MS);
+    this.recent.set(trigger, times);
+    return times.length < this.o.maxReceiptsPerTriggerPerHour;
+  }
+
+  /**
+   * Reactivate: decide what an `extend` firing does. Undefined = target is gone; write nothing.
+   * The cap counts `extended` receipts from every trusted worker, not just ours.
+   */
+  private async planReactivate(t: TriggerRecord, subject: Hex): Promise<ReactivatePlan | undefined> {
+    const action = t.spec.action;
+    if (action.type !== "extend") return undefined;
+    const live = await readLive(this.o.reader, subject);
+    if (!live) return undefined;
+    if (!live.permissionlessExtension && lower(live.owner) !== lower(this.o.address)) {
+      return { outcome: "not_extendable", oldExpiresAt: live.expiresAt };
+    }
+    const prior = await findSubjectReceipts(this.o.reader, t.key, subject, "extended");
+    const counted = prior.filter((r) => this.trustedWorkers.has(lower(r.creator))).length;
+    if (counted >= action.max_extensions) return { outcome: "cap_reached", oldExpiresAt: live.expiresAt };
+    return {
+      outcome: "extended",
+      oldExpiresAt: live.expiresAt,
+      newExpiresAt: live.expiresAt + BigInt(action.extend_blocks),
+    };
   }
 
   private async fire(t: TriggerRecord, f: Firing) {
@@ -187,23 +273,59 @@ export class Engine {
         return;
       }
 
+      if (!this.underCap(t.key)) {
+        // Not marked handled: it fires once the hourly window has room.
+        this.stats.skippedByCap++;
+        log.warn({ cap: this.o.maxReceiptsPerTriggerPerHour }, "receipt cap reached for this trigger; skipping");
+        return;
+      }
+
+      let plan: ReactivatePlan | undefined;
+      if (t.spec.action.type === "extend") {
+        if (!f.subject) throw new Error("extend firing has no subject entity");
+        plan = await this.planReactivate(t, f.subject);
+        if (!plan) {
+          log.warn({ subject: f.subject }, "extend target is no longer live; nothing to do");
+          return;
+        }
+      }
+
       const writer = this.o.writer();
       if (!writer) {
         this.stats.wouldFire++;
         this.dryFired.add(id);
-        log.warn({ summary: f.summary }, "WOULD FIRE (dry run: worker wallet unfunded)");
+        log.warn({ summary: f.summary, outcome: plan?.outcome }, "WOULD FIRE (dry run: worker wallet unfunded)");
         return;
       }
 
       const head = await this.o.reader.getBlockNumber();
+      const summary = plan ? `${plan.outcome}: ${f.summary}` : f.summary;
       const receipt = await writer.writeReceipt(
-        { trigger: t.key, mode: "public", epoch: f.epoch, firedBlock: head, evidenceBlock: f.evidenceBlock },
-        { matched_keys: f.matchedKeys, summary: f.summary },
+        {
+          trigger: t.key,
+          mode: "public",
+          epoch: f.epoch,
+          firedBlock: head,
+          evidenceBlock: f.evidenceBlock,
+          subject: f.subject,
+          outcome: plan?.outcome,
+          oldExpiresAt: plan?.oldExpiresAt,
+          newExpiresAt: plan?.newExpiresAt,
+        },
+        { matched_keys: f.matchedKeys, summary },
+        plan?.outcome === "extended" && f.subject && plan.newExpiresAt !== undefined
+          ? { entityKey: f.subject, expiresAt: plan.newExpiresAt }
+          : undefined,
       );
+      this.recent.get(t.key)?.push(Date.now());
       this.stats.firedSelf++;
       this.o.store.data.fired[id] = { by: "self", receipt: receipt.key, tx: receipt.tx, at: new Date().toISOString() };
       await this.o.store.write();
-      log.info({ receipt: receipt.key, tx: receipt.tx, summary: f.summary }, "FIRED");
+      log.info({ receipt: receipt.key, tx: receipt.tx, outcome: plan?.outcome, summary: f.summary }, "FIRED");
+      // Our own extension: update the index now rather than waiting for the WS event.
+      if (plan?.outcome === "extended" && f.subject && plan.newExpiresAt !== undefined) {
+        await this.expiry.onExtended(f.subject, plan.newExpiresAt, head);
+      }
     } catch (e) {
       this.fail(`fire ${id}`, e);
     } finally {

@@ -26,6 +26,8 @@ async function main() {
       dataDir,
       accessKey: env.ARKIV_ACCESS_KEY ? "set" : "missing",
       endpoint: env.PUBLIC_ENDPOINT ?? "(none)",
+      triggerCreators: env.TRIGGER_CREATORS.length > 0 ? env.TRIGGER_CREATORS : "any",
+      maxReceiptsPerTriggerPerHour: env.MAX_RECEIPTS_PER_TRIGGER_PER_HOUR,
     },
     "config validated",
   );
@@ -78,6 +80,8 @@ async function main() {
     log,
     address,
     writer: () => (live ? chain : null),
+    triggerCreators: env.TRIGGER_CREATORS,
+    maxReceiptsPerTriggerPerHour: env.MAX_RECEIPTS_PER_TRIGGER_PER_HOUR,
   });
   await engine.start();
 
@@ -91,6 +95,9 @@ async function main() {
       mode: live ? "live" : "dry-run",
       workerKey: workerKey ?? null,
       triggers: engine.triggerCount,
+      watchedEntities: engine.watchedCount,
+      triggerCreators: env.TRIGGER_CREATORS.length > 0 ? env.TRIGGER_CREATORS : "any",
+      maxReceiptsPerTriggerPerHour: env.MAX_RECEIPTS_PER_TRIGGER_PER_HOUR,
       stats: engine.stats,
     });
   });
