@@ -1,12 +1,27 @@
 #!/usr/bin/env -S npx tsx
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { ExpirationTime, jsonToPayload } from "@arkiv-network/sdk";
 import { str } from "@arkiv-network/sdk/attr";
 import { Command, InvalidArgumentError } from "commander";
 import type { Hex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import {
+  DEAD,
   DEMO_FEED_KINDS,
   PublicTriggerSpec,
+  SealedTriggerSpec,
+  arkivVerifyReads,
+  commit,
+  destinationDigest,
+  handoffMessage,
+  listWorkers,
+  randomSalt,
+  revealAttributes,
+  sealedAttributes,
+  verifySealed,
+  type Destination,
   demoFeedAttributes,
   readLive,
   loadTriggers,
@@ -20,11 +35,6 @@ const program = new Command()
   .name("arkivate")
   .description("If-this-then-that for Arkiv data: create, seal and verify triggers.")
   .version("0.0.1");
-
-const notImplemented = (name: string) => () => {
-  console.error(`arkivate ${name}: not implemented yet`);
-  process.exitCode = 1;
-};
 
 const positiveInt = (v: string) => {
   const n = Number(v);
@@ -96,10 +106,159 @@ program
     console.log(`${triggers.length} trigger(s), ${invalid.length} invalid`);
   });
 
-program.command("seal").description("Publish a sealed trigger commitment").action(notImplemented("seal"));
-program.command("handoff").description("Send a sealed spec privately to a worker").action(notImplemented("handoff"));
-program.command("reveal").description("Reveal a sealed spec to open a dispute").action(notImplemented("reveal"));
-program.command("verify").description("Verify whether a worker skipped a sealed job").action(notImplemented("verify"));
+// ---- sealed triggers --------------------------------------------------------------------------
+
+const SEALED_DIR = join(homedir(), ".arkivate", "sealed");
+interface SealedFile {
+  sealed_key: Hex;
+  spec: unknown;
+  salt: Hex;
+  commitment: Hex;
+  worker: Hex;
+  endpoint: string;
+  created_at: string;
+}
+const sealedPath = (k: Hex) => join(SEALED_DIR, `${k.toLowerCase()}.json`);
+const readSealedFile = (path: string) => JSON.parse(readFileSync(path, "utf8")) as SealedFile;
+
+function sealedWallet() {
+  const env = loadConfig(["SEALED_OWNER_PRIVATE_KEY"]);
+  return { wallet: makeWallet(env.SEALED_OWNER_PRIVATE_KEY as Hex, env), key: env.SEALED_OWNER_PRIVATE_KEY as Hex };
+}
+
+/** POST the private hand-off to a worker. Used by `seal` and `handoff`. */
+async function sendHandoff(f: SealedFile, destination: Destination, ownerKey: Hex) {
+  const signature = await privateKeyToAccount(ownerKey).signMessage({
+    message: handoffMessage({
+      sealedKey: f.sealed_key,
+      commitment: f.commitment,
+      workerAddress: f.worker,
+      destinationDigest: destinationDigest(destination),
+    }),
+  });
+  const res = await fetch(`${f.endpoint.replace(/\/$/, "")}/sealed`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sealed_key: f.sealed_key, spec: f.spec, salt: f.salt, destination, signature }),
+  });
+  const body = (await res.json().catch(() => ({}))) as { acceptance_key?: Hex; tx?: Hex; idempotent?: boolean; error?: string };
+  if (!res.ok) throw new Error(`worker refused the hand-off (${res.status}): ${body.error ?? "no reason given"}`);
+  return body;
+}
+
+function destinationFrom(opts: { telegram?: string; webhook?: string }): Destination {
+  if (Boolean(opts.telegram) === Boolean(opts.webhook)) throw new InvalidArgumentError("pass exactly one of --telegram or --webhook");
+  return opts.webhook ? { type: "webhook", value: opts.webhook } : { type: "telegram", value: opts.telegram! };
+}
+
+program
+  .command("seal")
+  .description("Publish a sealed trigger (only a salted hash on Arkiv) and hand it privately to a worker")
+  .requiredOption("--spec <file>", "TriggerSpec JSON with action webhook|telegram (no destination inside)")
+  .requiredOption("--worker <address|name>", "the worker to run it (address, or its registered name)")
+  .option("--telegram <chatId>", "deliver to this Telegram chat (stays off Arkiv)")
+  .option("--webhook <url>", "deliver to this webhook URL (stays off Arkiv)")
+  .option("--endpoint <url>", "worker hand-off URL, if its registration has none (e.g. http://localhost:8787)")
+  .option("--days <n>", "how long the job runs (sealed entity lifetime)", positiveInt, 7)
+  .action(
+    async (opts: { spec: string; worker: string; telegram?: string; webhook?: string; endpoint?: string; days: number }) => {
+      const destination = destinationFrom(opts);
+      const spec = parseSpec(SealedTriggerSpec, JSON.parse(readFileSync(opts.spec, "utf8")));
+      if (spec.action.type !== destination.type) {
+        throw new InvalidArgumentError(`spec action is "${spec.action.type}" but --${destination.type} was given`);
+      }
+      const { wallet, key: ownerKey } = sealedWallet();
+      const workers = await listWorkers(makeReader());
+      const w = workers.find((x) => x.creator.toLowerCase() === opts.worker.toLowerCase() || x.name === opts.worker);
+      if (!w) throw new Error(`no live worker "${opts.worker}". Live: ${workers.map((x) => `${x.name} ${x.creator}`).join(", ") || "none"}`);
+      const endpoint = opts.endpoint ?? w.endpoint;
+      if (!endpoint) throw new Error(`worker ${w.name} registered no public endpoint; pass --endpoint`);
+
+      // Commit to the normalized spec (zod defaults filled in): that exact JSON is what's sent and revealed.
+      const salt = randomSalt();
+      const commitment = commit(spec, salt);
+      const { entityKey, txHash } = await wallet.createEntity({
+        payload: new Uint8Array(),
+        contentType: "application/octet-stream",
+        attributes: sealedAttributes(commitment, w.creator),
+        expires: ExpirationTime.fromDays(opts.days),
+        flags: { readonly: true },
+      });
+      const file: SealedFile = { sealed_key: entityKey, spec, salt, commitment, worker: w.creator, endpoint, created_at: new Date().toISOString() };
+      mkdirSync(SEALED_DIR, { recursive: true });
+      writeFileSync(sealedPath(entityKey), JSON.stringify(file, null, 2), { mode: 0o600 });
+      console.log(`sealed ${entityKey}`);
+      console.log(`  commitment ${commitment} → worker ${w.name} ${w.creator}`);
+      console.log(`  tx ${txUrl(txHash)}`);
+      console.log(`  ⚠ ${sealedPath(entityKey)} holds the ONLY copy of the salt. Without it you can't reveal.`);
+
+      const r = await sendHandoff(file, destination, ownerKey);
+      console.log(`acceptance ${r.acceptance_key}${r.idempotent ? " (already accepted)" : ""}`);
+      if (r.tx && r.tx !== "0x") console.log(`  tx ${txUrl(r.tx)}`);
+    },
+  );
+
+program
+  .command("handoff")
+  .description("Re-send a sealed job's private hand-off (idempotent: returns the existing acceptance)")
+  .argument("<sealed-key>", "sealed entity key", entityKey)
+  .option("--telegram <chatId>", "Telegram chat ID")
+  .option("--webhook <url>", "webhook URL")
+  .option("--endpoint <url>", "override the worker endpoint saved at seal time")
+  .action(async (k: Hex, opts: { telegram?: string; webhook?: string; endpoint?: string }) => {
+    const f = readSealedFile(sealedPath(k));
+    if (opts.endpoint) f.endpoint = opts.endpoint;
+    const r = await sendHandoff(f, destinationFrom(opts), sealedWallet().key);
+    console.log(`acceptance ${r.acceptance_key}${r.idempotent ? " (already accepted)" : ""}`);
+  });
+
+program
+  .command("reveal")
+  .description("Publish { spec, salt } (burned) so anyone can verify a dispute")
+  .argument("<sealed-key>", "sealed entity key", entityKey)
+  .option("--file <path>", "reveal from this file instead of ~/.arkivate/sealed/<key>.json")
+  .action(async (k: Hex, opts: { file?: string }) => {
+    const f = readSealedFile(opts.file ?? sealedPath(k));
+    const { wallet } = sealedWallet();
+    const [p] = await makeReader().predictEntityKeys({ owner: wallet.account.address, count: 1 });
+    if (!p) throw new Error("predictEntityKeys returned nothing");
+    const { txHash } = await wallet.executeBatch({
+      creates: [
+        {
+          salt: p.salt,
+          payload: jsonToPayload({ spec: f.spec, salt: f.salt }),
+          contentType: "application/json",
+          attributes: revealAttributes(k),
+          expires: ExpirationTime.fromDays(30),
+          flags: { readonly: true },
+        },
+      ],
+      ownershipChanges: [{ entityKey: p.key, newOwner: DEAD }],
+    });
+    console.log(`reveal ${p.key} for sealed ${k} (burned)`);
+    console.log(`  tx ${txUrl(txHash)}`);
+  });
+
+program
+  .command("verify")
+  .description("Verify a sealed job: FIRED, SKIPPED (provable censorship), PENDING, …")
+  .argument("<sealed-key>", "sealed entity key", entityKey)
+  .option("--json", "print the full result as JSON")
+  .action(async (k: Hex, opts: { json?: boolean }) => {
+    const env = loadConfig();
+    const r = await verifySealed(k, arkivVerifyReads(makeReader(env)), env.ARKIV_RPC_HTTP);
+    if (opts.json) {
+      console.log(JSON.stringify(r, (_k, v) => (typeof v === "bigint" ? v.toString() : v), 2));
+      return;
+    }
+    console.log(`VERDICT: ${r.verdict}   (sealed ${k}, head ${r.head})\n`);
+    r.steps.forEach((s, i) => {
+      console.log(`${i + 1}. ${s.ok ? "✓" : "✗"} ${s.name}: ${s.detail}`);
+      for (const [name, v] of Object.entries(s.evidence)) console.log(`     ${name}: ${v}`);
+    });
+    console.log("\nRe-check it yourself:");
+    for (const c of r.recheck) console.log(`  ${c}`);
+  });
 
 program
   .command("demo-feed")

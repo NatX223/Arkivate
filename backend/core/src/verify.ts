@@ -133,8 +133,10 @@ export async function verifySealed(
     steps.push({ name: "reveal matches", ok: false, detail: `no reveal by the sealed creator ${base.creator} yet`, evidence: {} });
     return done("PENDING");
   }
-  const recomputed = commit(reveal.spec, reveal.salt);
-  const parsed = SealedTriggerSpec.safeParse(reveal.spec);
+  // Any reveal by the creator that opens the commitment counts; report the first if none does.
+  const opening = reveals.find((r) => lower(commit(r.spec, r.salt)) === lower(base.commitment)) ?? reveal;
+  const recomputed = commit(opening.spec, opening.salt);
+  const parsed = SealedTriggerSpec.safeParse(opening.spec);
   if (lower(recomputed) !== lower(base.commitment) || !parsed.success) {
     steps.push({
       name: "reveal matches",
@@ -142,7 +144,7 @@ export async function verifySealed(
       detail: !parsed.success
         ? "revealed spec is not a valid sealed TriggerSpec"
         : "keccak256(canonical(spec) ‖ salt) does not equal the commitment",
-      evidence: { reveal: reveal.key, recomputed, commitment: base.commitment },
+      evidence: { reveal: opening.key, recomputed, commitment: base.commitment },
     });
     return done("INVALID_REVEAL");
   }
@@ -150,7 +152,7 @@ export async function verifySealed(
     name: "reveal matches",
     ok: true,
     detail: `keccak256(canonical(spec) ‖ salt) = commitment; condition ${parsed.data.cond.type}`,
-    evidence: { reveal: reveal.key, recomputed },
+    evidence: { reveal: opening.key, recomputed },
   });
 
   // 3. The chosen worker accepted (burned acceptance, same commitment).
