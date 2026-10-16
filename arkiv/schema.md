@@ -13,7 +13,7 @@ Network: Tiramisu (chain ID 7738577). Attribute builders live in
 | `worker` | worker wallet | worker | none (mutable) | 1 day, extended every 6 h | ✅ shipped |
 | `trigger` | trigger owner | trigger owner | `permissionlessExtension` | owner picks (default 7 days) | ✅ shipped |
 | `receipt` | worker wallet | **`0x…dEaD`** (burned) | `readonly` + `permissionlessExtension` | 30 days | ✅ shipped (public mode) |
-| `demo_feed` | demo wallet (owner) | demo wallet | none | `--ttl` minutes (default 60) | ✅ shipped |
+| `demo_feed` | demo wallet (owner) | demo wallet | `listing`: `permissionlessExtension` | `--ttl` minutes, or `--blocks` for listing/canary | ✅ shipped |
 | `sealed` | fresh owner wallet | owner | `readonly` | spec life + dispute window | phase 2 |
 | `acceptance` | worker wallet | **`0x…dEaD`** | `readonly` + `permissionlessExtension` | 30 days | phase 2 |
 | `reveal` | sealed's creator | **`0x…dEaD`** | `readonly` | 30 days | phase 2 |
@@ -45,9 +45,11 @@ worker should do.
 |---|---|---|
 | `project` | str | `arkivate` |
 | `entity_type` | str | `trigger` |
-| `cond_type` | str | `on_create` \| `on_silence` \| `on_count` |
+| `cond_type` | str | `on_create` \| `on_silence` \| `on_count` \| `on_expiring` \| `on_expire` \| `on_extend` \| `on_delete` |
+| `action_type` | str | `notice` \| `extend` |
 | `status` | str | `active` \| `paused` (only the owner can patch it) |
 | `created_at` | u64 | ms since epoch |
+| `watch_key` | key | only when an expiry condition watches one entity: lets anyone find every trigger on it |
 
 Payload: a TriggerSpec v1 (validated by `PublicTriggerSpec` in `backend/core/src/spec.ts`). The
 action of a public trigger is always `notice`, meaning the only effect is a receipt.
@@ -69,6 +71,13 @@ action of a public trigger is always `notice`, meaning the only effect is a rece
   (only the operators the node accepts). Literals are typed: `{str}`, `{u64}`, `{i32}`, `{addr}`,
   `{key}`, `{bool}`.
 - `created_by`: the trusted creator, rendered as `$creator = addr(…)`. Required for `on_silence`.
+- Expiry conditions (`on_expiring`, `on_expire`, `on_extend`, `on_delete`) take
+  `watch: { "entity_key": "0x…" }` (one entity) or `watch: { "where": […], "created_by"?: "0x…" }`
+  (every matching entity). `on_expiring` needs `lead_blocks`. `on_expiring` / `on_expire` take
+  `deadline: "follow"` (default; the entity's current `expiresAt`) or `"pinned"` (its `expiresAt`
+  when the trigger first saw it, which nobody's extension can move).
+- `action: { "type": "extend", "extend_blocks": n, "max_extensions": m ≤ 100 }` (Reactivate) is
+  only valid with `on_expiring`. `on_extend` + `extend` is rejected as a loop.
 - Workers re-validate every trigger, because anyone can post one.
 
 ## receipt
@@ -85,6 +94,18 @@ makes a skipped firing provable.
 | `epoch` | str | dedupe key, see below |
 | `fired_block` | u64 | head block when the receipt was written |
 | `evidence_block` | u64 | block of the evidence (matched entity, or the evaluation head) |
+| `subject` | key | expiry conditions: the watched entity this firing is about |
+| `outcome` | str | `extend` action only: `extended` \| `not_extendable` \| `cap_reached` |
+| `old_expires_at` | u64 | `extend` action: the entity's expiry block before |
+| `new_expires_at` | u64 | `extend` action, `extended` only: the expiry block after |
+
+Reactivate outcomes:
+
+| `outcome` | Meaning | On-chain effect |
+|---|---|---|
+| `extended` | The target was extended to `old_expires_at + extend_blocks` (an absolute block) | The extension and the burned receipt are **one atomic batch**: extended if and only if the receipt exists |
+| `not_extendable` | The target lacks `permissionlessExtension` and isn't owned by the worker | Receipt only |
+| `cap_reached` | `max_extensions` `extended` receipts already exist for this (trigger, subject), counted across all registered workers | Receipt only; the target is left to expire |
 
 Public payload: `{ "matched_keys": ["0x…"], "summary": "new matching entity 0x… at block 648210" }`.
 Sealed receipts (phase 2) will carry only `{ "result_hash": "0x…" }`.
@@ -96,6 +117,15 @@ Epochs (one receipt per `(trigger, epoch)` across all workers):
 | `on_create` | `create:<matched_key>` | one firing per matching entity created after the trigger |
 | `on_silence` | `silence:<last_seen_key>` or `silence:none` | one firing per silence episode |
 | `on_count` | `count:<head / 1800>` | at most one firing per ~1 h bucket while the threshold holds |
+| `on_expiring` | `expiring:<subject>:<deadline>` | once per deadline; an extension (with `follow`) re-arms it |
+| `on_expire` | `expire:<subject>:<deadline>` | once per deadline |
+| `on_extend` | `extend:<subject>:<new_expires_at>` | once per extension |
+| `on_delete` | `delete:<subject>` | once |
+
+Expired vs deleted: Arkiv has no expiration event, and a read of a missing entity
+(`NoEntityFoundError`) can't say why it is missing. Workers decide: a seen `EntityDeleted` event,
+or the entity vanishing **before** its known `expiresAt` (expiry can't come early) → deleted;
+otherwise → expired.
 
 Dedupe: before writing, a worker looks up receipts for `(trigger, epoch)` and skips if one exists
 from a **registered worker** (a creator with a live `worker` entity). Receipts from unregistered
@@ -115,7 +145,7 @@ Synthetic data emitted by `arkivate demo-feed` to drive triggers in demos and te
 |---|---|---|
 | `project` | str | `arkivate` |
 | `entity_type` | str | `demo_feed` |
-| `kind` | str | `heartbeat` \| `event` |
+| `kind` | str | `heartbeat` \| `event` \| `listing` (short-lived, `permissionlessExtension`) \| `canary` (short-lived, not extendable by others) |
 | `seq` | u64 | 1, 2, … within one run |
 | `created_at` | u64 | ms since epoch |
 

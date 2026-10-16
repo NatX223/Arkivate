@@ -120,3 +120,42 @@ Tooling: pnpm 9.15.9 · TypeScript 5.9.3 · Windows 11 (Git Bash)
 - **Actual:** `dotenv` keeps the last value of a duplicated key, so the empty `WORKER_PRIVATE_KEY=` overrode the real one and the worker exited with `Missing required environment variable(s): WORKER_PRIVATE_KEY`.
 - **Workaround:** Renamed the second block to `WORKER_2_*` (a local convenience the code never reads). For the test run, worker-2's values were set in the shell, which takes precedence over `.env`.
 - **Suggestion:** None for Arkiv. For us: one worker identity per `.env`, and set extra identities per process.
+
+## F12 — No expiration event: expiry has to be detected by sweeping
+- **When:** 2026-10-16 ~15:00 BST (Phase 1b, expiry engine)
+- **What I did:** Built `on_expiring` / `on_expire`: "tell me when entity X is about to expire / has expired". Reacting to expiry is the core of Arkivate.
+- **Expected:** An `EntityExpired` event alongside `EntityCreated`, `EntityPatched`, `ExpiryExtended`, `OwnershipTransferred` and `EntityDeleted`.
+- **Actual:** `ENTITY_EVENTS_ABI` has no expiry event, and expiry happens without a transaction, so there is no log to watch. Every app that cares about expiry must keep its own index of deadlines and poll. Measured on Tiramisu: an entity with `expiresAt = 655058` was already absent at head `655058`, so **`expiresAt` is the first block the entity is gone**, not the last block it lives (also undocumented). Our sweep runs every ~5 blocks: canary `C1` (`expiresAt 654834`) was confirmed expired at head `654838`.
+- **Repro:** Create an entity with `ExpirationTime.fromBlocks(60)`, `watchEntityEvents({ onEvent })`, and wait past `expiresAt`: nothing arrives.
+- **Workaround:** The worker keeps an index `key → expiresAt` (persisted, so expiries during downtime are still caught), sweeps it every 10 s against the head, and re-reads at the deadline to confirm.
+- **Suggestion:** Emit `EntityExpired` from the node (even as a synthetic log per block), or offer a subscription such as "entities expiring within N blocks". Document whether `expiresAt` is inclusive.
+
+## F13 — `NoEntityFoundError` can't tell expired from deleted (or never existed)
+- **When:** 2026-10-16 ~15:00 BST
+- **What I did:** At a deadline, re-read the watched entity to decide between `on_expire` and `on_delete`.
+- **Expected:** A read that distinguishes "expired at block N" from "deleted at block N" from "unknown key".
+- **Actual:** `getEntity` throws `NoEntityFoundError` for all three. The SDK source says so ("no live entity has that key — it never existed, or it was deleted or has expired"), and query results simply omit the entity. Historical reads (`atBlock`) have short retention, so you can't reliably look back either.
+- **Repro:** `getEntity(k)` after `deleteEntity(k)`, and after `k` expires: identical errors.
+- **Workaround:** Combine evidence. A seen `EntityDeleted` event, or the entity vanishing *before* its known `expiresAt` (expiry can't come early), means deleted; otherwise expired. Tested: owner-deleted canary `C3` fired `on_delete`, and its `on_expire` trigger correctly never fired.
+- **Suggestion:** A tombstone read such as `getEntityStatus(k) → { state: "expired" | "deleted", atBlock }`, or a `reason` field on `NoEntityFoundError`.
+
+## F14 — `extendEntity` sets an expiry rather than adding to it, and `ExpiryExtended` doesn't say who extended
+- **When:** 2026-10-16 ~15:00 BST
+- **What I did:** Built the Reactivate action ("extend the entity by `extend_blocks` before it expires") and pinned deadlines (immune to third-party extensions).
+- **Expected:** `extendEntity({ expires: ExpirationTime.fromBlocks(120) })` to add 120 blocks to the current expiry; the extension event to identify the extender.
+- **Actual:**
+  - Despite its name, `extendEntity` **sets** a new expiry, and durations count from *now*, not from the current expiry. The JSDoc says so, but the name invites the opposite reading: `fromBlocks(120)` on an entity with 200 blocks left is rejected ("would not move the expiry later") rather than adding 120.
+  - `ExpiryExtendedEvent.owner` is the entity's owner, not the account that extended it. With `permissionlessExtension`, an observer can't tell an owner renewal from a third party's without fetching the transaction.
+  - Positive: `ExpirationTime.atBlock(current + n)` was exact. The returned `expiresAt` matched the target in every case (`654927 → 655027`, `654852 → 654952`), and a non-owner (worker-2's wallet) extended a `permissionlessExtension` listing without issue.
+- **Repro:** `extendEntity({ entityKey, expires: ExpirationTime.fromBlocks(10) })` on an entity with 100 blocks left → rejected.
+- **Workaround:** Always extend to an absolute block, `ExpirationTime.atBlock(live.expiresAt + n)`. For pinned deadlines, record `expiresAt` at first sight and never move it, whoever extends.
+- **Suggestion:** Add `ExpirationTime.by(n)` (relative to the current expiry), or rename the action to `setExpiry`. Include the transaction sender (`extendedBy`) in `ExpiryExtended`.
+
+## F15 — Write latency varies a lot (2.7 s to 15.6 s) on ~2 s blocks
+- **When:** 2026-10-16 ~15:00 BST
+- **What I did:** Created 15 entities sequentially from one process during test setup, timing each `createEntity` call (send plus wait for receipt).
+- **Expected:** Roughly 1–2 blocks per write.
+- **Actual:** 8.7, 2.7, 6.6, 6.6, 6.4, 3.5, 15.4, 11.7, 15.6, 8.3, 11.8, 7.1, 5.2, 9.0 and 6.7 s. That is a spread of 1 to 8 blocks for identical writes from an idle wallet. It matters for anything time-boxed: our multi-worker dedupe slot (F7) and the expiry lead time (`lead_blocks`) both have to absorb the worst case.
+- **Repro:** Time `await wallet.createEntity(...)` in a loop on Tiramisu.
+- **Workaround:** 12 s per-rank dedupe slots; we recommend `lead_blocks ≥ 20` for Reactivate so an extension lands well before the deadline.
+- **Suggestion:** Publish expected inclusion latency for Tiramisu, and say whether the SDK's receipt wait adds polling delay (the default poll interval may be part of the spread).
