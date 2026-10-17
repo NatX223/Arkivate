@@ -20,8 +20,8 @@ async function loadBoard() {
 }
 
 export default function WorkersPage() {
-  // Health is polled often: the demo takes a worker down on camera and the change must show fast.
-  const board = usePoll(loadBoard, 8_000);
+  // Health comes from the workers themselves (not an Arkiv read), so it can refresh with the snapshot.
+  const board = usePoll(loadBoard, 20_000);
   const head = useHead().data;
   const d = board.data;
   const stats = useMemo(() => {

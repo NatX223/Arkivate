@@ -36,7 +36,7 @@ async function loadOverview() {
 }
 
 export default function Home() {
-  const overview = usePoll(loadOverview, 10_000);
+  const overview = usePoll(loadOverview, 20_000);
   const workers = usePoll(() => loadWorkers(true), 30_000);
   const head = useHead().data ?? overview.data?.head;
   const d = overview.data;

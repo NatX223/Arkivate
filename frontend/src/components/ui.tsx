@@ -202,7 +202,7 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
       </span>
       <p className="m-0 text-sm text-muted">
         {limited
-          ? "The Arkiv RPC is rate-limiting reads right now. The page keeps retrying on its own."
+          ? "The Arkiv RPC is rate-limiting reads right now. The page backs off and retries on its own (30 s, then longer)."
           : errMessage(error).split("\n")[0]}
       </p>
       {onRetry && (

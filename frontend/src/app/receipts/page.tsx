@@ -27,7 +27,7 @@ export default function ReceiptsPage() {
       ]);
       return { receipts, pub: byKey(pub.triggers), workers };
     },
-    10_000,
+    20_000,
     win,
   );
   const head = useHead().data;

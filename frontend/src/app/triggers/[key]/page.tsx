@@ -5,7 +5,7 @@ import { str } from "@arkiv-network/sdk/attr";
 import { DEAD, commit, revealAttributes, snapshotWatch, type Destination, type SealedTriggerSpec } from "@arkivate/core";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { Hex } from "viem";
 import { DownloadIcon } from "@/components/icons";
 import { TxProgress } from "@/components/TxProgress";
@@ -26,12 +26,12 @@ import {
 import { getReader } from "@/lib/arkiv";
 import {
   loadAcceptances,
-  loadHead,
   loadReceipts,
   loadReveals,
   loadTriggerEntity,
   loadWatched,
   loadWorkers,
+  markChanged,
   workerLabel,
   type PublicTrigger,
   type Receipt,
@@ -58,7 +58,8 @@ async function loadDetail(k: Hex) {
   if (entity.kind === "public" && "watch" in entity.trigger.spec.cond) {
     const watch = entity.trigger.spec.cond.watch;
     if ("entity_key" in watch) watched = (await loadWatched(watch.entity_key as Hex)) ?? null;
-    else matched = (await snapshotWatch(getReader(), watch, await loadHead())).slice(0, 6) as { key: Hex; expiresAt: bigint }[];
+    // The real head (free), not the extrapolated one: an `atBlock` ahead of the chain is rejected.
+    else matched = (await snapshotWatch(getReader(), watch, await getReader().getBlockNumber())).slice(0, 6) as { key: Hex; expiresAt: bigint }[];
   }
   return { entity, receipts, workers, acceptances, reveals, watched, matched };
 }
@@ -67,7 +68,13 @@ export default function TriggerDetailPage() {
   const params = useParams<{ key: string }>();
   const k = (params.key ?? "") as Hex;
   const valid = isKey(k);
-  const detail = usePoll(() => (valid ? loadDetail(k) : Promise.reject(new Error("not a 32-byte entity key"))), 12_000, k);
+  const detail = usePoll(() => (valid ? loadDetail(k) : Promise.reject(new Error("not a 32-byte entity key"))), 30_000, k);
+  // After a write from this page, read this key from Arkiv for a while instead of the snapshot.
+  const { refresh } = detail;
+  const changed = useCallback(() => {
+    markChanged(k);
+    refresh();
+  }, [k, refresh]);
   const head = useHead().data;
   const d = detail.data;
 
@@ -86,9 +93,9 @@ export default function TriggerDetailPage() {
       ) : !d ? (
         detail.error ? <ErrorState error={detail.error} onRetry={detail.refresh} /> : <Loading />
       ) : d.entity.kind === "public" ? (
-        <PublicDetail t={d.entity.trigger} d={d} head={head} onChange={detail.refresh} />
+        <PublicDetail t={d.entity.trigger} d={d} head={head} onChange={changed} />
       ) : d.entity.kind === "sealed" ? (
-        <SealedDetail s={d.entity.sealed} d={d} head={head} onChange={detail.refresh} />
+        <SealedDetail s={d.entity.sealed} d={d} head={head} onChange={changed} />
       ) : d.entity.kind === "gone" && d.acceptances.length > 0 ? (
         <Empty title="This sealed trigger has expired.">
           Its acceptance is still on Arkiv, so a dispute can still be checked.{" "}

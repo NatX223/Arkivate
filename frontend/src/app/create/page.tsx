@@ -17,7 +17,7 @@ import type { Hex } from "viem";
 import { CheckIcon, DownloadIcon, LockIcon, PinIcon, TerminalIcon } from "@/components/icons";
 import { Badge, CopyButton, Field, JsonBlock, Segmented, Steps, explorerTx, expiryView, ExpiryBar, type StepItem, type StepState } from "@/components/ui";
 import { getReader } from "@/lib/arkiv";
-import { loadWatched, loadWorkers, type Worker } from "@/lib/data";
+import { loadWatched, loadWorkers, markChanged, type Worker } from "@/lib/data";
 import { describeSpec } from "@/lib/describe";
 import { minutesToBlocks, short } from "@/lib/format";
 import { HandoffError, sendHandoff } from "@/lib/handoff";
@@ -389,7 +389,7 @@ function WatchStep({ f, set, next }: { f: Form; set(p: Partial<Form>): void; nex
   const head = useHead().data;
   const key = f.entityKey.trim();
   const validKey = /^0x[0-9a-fA-F]{64}$/.test(key);
-  const live = usePoll(() => (validKey ? loadWatched(key as Hex) : Promise.resolve(undefined)), 15_000, validKey ? key : null);
+  const live = usePoll(() => (validKey ? loadWatched(key as Hex) : Promise.resolve(undefined)), 30_000, validKey ? key : null);
   const activity = ACTIVITY.includes(f.cond);
   const addrBad = !!f.createdBy.trim() && !/^0x[0-9a-fA-F]{40}$/.test(f.createdBy.trim());
 
@@ -838,7 +838,9 @@ function SignPanel({
           // Anyone (e.g. a subscriber) may keep a useful public trigger alive.
           flags: { permissionlessExtension: true },
         });
-        setResult({ entityKey: r.entityKey, txHash: r.txHash });
+        // Brand new: its detail page reads it from Arkiv, not the (up to 20 s old) snapshot.
+      markChanged(r.entityKey);
+      setResult({ entityKey: r.entityKey, txHash: r.txHash });
         setPhase("done");
         return;
       }
@@ -864,6 +866,8 @@ function SignPanel({
       // The salt exists nowhere else: keep it before anything else can fail.
       saveSealed(sf);
       setFile(sf);
+      // Brand new: its detail page reads it from Arkiv, not the (up to 20 s old) snapshot.
+      markChanged(r.entityKey);
       setResult({ entityKey: r.entityKey, txHash: r.txHash });
       onSealed();
       setPhase("confirmed");

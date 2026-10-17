@@ -59,7 +59,7 @@ const CONDS = [
 ] as const;
 
 export default function TriggersPage() {
-  const list = usePoll(loadList, 15_000);
+  const list = usePoll(loadList, 20_000);
   const head = useHead().data;
   const [mode, setMode] = useState<Mode>("all");
   const [cond, setCond] = useState<string>("all");
