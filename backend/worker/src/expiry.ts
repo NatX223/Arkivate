@@ -63,6 +63,16 @@ export class ExpiryWatcher {
     return false;
   }
 
+  /** Every query watch's filter (for the free count that gates the WS flush). */
+  queryWatchFilters() {
+    const out = [];
+    for (const { trigger } of this.byTrigger.values()) {
+      const w = trigger.spec.cond.watch;
+      if (!("entity_key" in w)) out.push(w);
+    }
+    return out;
+  }
+
   /** Query watches, so the WS prefilter knows which creators matter. */
   queryWatchCreators(): Set<string> | null {
     const out = new Set<string>();

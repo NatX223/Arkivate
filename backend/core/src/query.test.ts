@@ -2,6 +2,7 @@ import type { Hex } from "viem";
 import { describe, expect, it } from "vitest";
 import { localMatch, type CandidateRow } from "./query.js";
 import type { Reader } from "./reader.js";
+import { fetchCandidates } from "./conditions.js";
 import { findReceipts } from "./records.js";
 
 const ME = "0x1111111111111111111111111111111111111111" as Hex;
@@ -58,5 +59,29 @@ describe("findReceipts", () => {
     } as unknown as Reader;
     expect(await findReceipts(reader, `0x${"b".repeat(64)}` as Hex, "create:x")).toEqual([]);
     expect(calls).toEqual(["arkiv_getEntityCount"]);
+  });
+});
+
+describe("fetchCandidates (WS flush)", () => {
+  it("makes no billed query when the free count says none of the new keys match", async () => {
+    const calls: string[] = [];
+    const reader = {
+      request: async ({ method }: { method: string }) => {
+        calls.push(method);
+        return 0;
+      },
+      select: () => {
+        calls.push("arkiv_query");
+        throw new Error("should not query");
+      },
+    } as unknown as Reader;
+    const keys = [`0x${"c".repeat(64)}`, `0x${"d".repeat(64)}`] as Hex[];
+    expect(await fetchCandidates(reader, keys, [{ where: [["eq", "kind", { str: "heartbeat" }]] }], 10n)).toEqual([]);
+    expect(calls).toEqual(["arkiv_getEntityCount"]);
+  });
+
+  it("skips everything when no trigger could match", async () => {
+    const reader = {} as Reader;
+    expect(await fetchCandidates(reader, [`0x${"c".repeat(64)}` as Hex], [], 10n)).toEqual([]);
   });
 });

@@ -127,6 +127,19 @@ export async function loadTriggers(
   return { triggers, invalid };
 }
 
+/**
+ * Free change detection (`arkiv_getEntityCount` costs nothing; a query costs 100 units): how many
+ * live triggers with this status, and worker registrations, exist. A worker compares these with
+ * what it last loaded and only re-lists when they differ.
+ */
+export async function countTriggers(reader: Reader, status: "active" | "paused", atBlock: bigint): Promise<number> {
+  return countMatching(reader, and([...ns(ENTITY_TYPES.trigger), eq("status", str(status))]), atBlock);
+}
+
+export async function countWorkers(reader: Reader, atBlock: bigint): Promise<number> {
+  return countMatching(reader, and(ns(ENTITY_TYPES.worker)), atBlock);
+}
+
 export interface ReceiptRef {
   key: Hex;
   creator: Hex;

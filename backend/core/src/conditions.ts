@@ -1,5 +1,5 @@
 import { key as keyValue } from "@arkiv-network/sdk/attr";
-import { eq, or, render, type Expression } from "@arkiv-network/sdk/query";
+import { and, eq, or, render, type Expression } from "@arkiv-network/sdk/query";
 import type { Hex } from "viem";
 import { compare, conditionExpression, localMatch, type CandidateRow, type QueryFilter } from "./query.js";
 import type { Reader } from "./reader.js";
@@ -51,16 +51,29 @@ export async function matchCandidates(
 }
 
 /**
- * The rows for a batch of freshly created keys, in one query per 50 keys, with everything
- * `localMatch` needs. One fetch serves every on_create trigger and query watch.
+ * The rows, among a batch of freshly created keys, that match at least one of `filters`, with
+ * everything `localMatch` needs. One fetch serves every on_create trigger and query watch.
+ *
+ * Gated by the free filtered count: most of the chain's new entities match nothing we watch,
+ * and then no billed query is made at all. (A trigger without `created_by` lets every new entity
+ * on the chain into the batch.)
  */
-export async function fetchCandidates(reader: Reader, candidates: readonly Hex[]): Promise<CandidateRow[]> {
+export async function fetchCandidates(
+  reader: Reader,
+  candidates: readonly Hex[],
+  filters: readonly QueryFilter[],
+  atBlock: bigint,
+): Promise<CandidateRow[]> {
   const out: CandidateRow[] = [];
+  if (filters.length === 0) return out;
+  const any = or(filters.map((f) => conditionExpression(f)));
   for (let i = 0; i < candidates.length; i += CANDIDATE_CHUNK) {
     const chunk = candidates.slice(i, i + CANDIDATE_CHUNK);
+    const expr = and([or(chunk.map((k) => eq("$key", keyValue(k)))), any]);
+    if ((await countMatching(reader, expr, atBlock)) === 0) continue;
     const page = await reader
       .select({ key: true, creator: true, createdAt: true, expiresAt: true, attributes: true })
-      .where(or(chunk.map((k) => eq("$key", keyValue(k)))))
+      .where(expr)
       .limit(CANDIDATE_CHUNK)
       .fetch();
     for (const e of page.entities) {

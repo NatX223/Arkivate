@@ -105,6 +105,8 @@ describe("worker startup under a 429", () => {
       },
       getBlockNumber: async () => 1000n,
       getBalance: async () => 10n ** 18n,
+      // arkiv_getEntityCount (free change detection): nothing on chain.
+      request: async () => 0,
       select: () => emptyQuery(),
     } as unknown as Reader;
     const wallet = {

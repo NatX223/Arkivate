@@ -1,4 +1,8 @@
 import {
+  conditionExpression,
+  countMatching,
+  countTriggers,
+  countWorkers,
   evalOnCount,
   evalOnSilence,
   fetchCandidates,
@@ -17,6 +21,7 @@ import {
   type Destination,
   type Firing,
   type PayloadCache,
+  type QueryFilter,
   type RateGate,
   type Reader,
   type ReceiptOutcome,
@@ -63,6 +68,8 @@ const HOUR_MS = 60 * 60_000;
  */
 const FIRE_SLOT_MS = 12_000;
 const MAX_FIRE_DELAY_MS = 36_000;
+/** Billed backstop re-check for a trigger that is already silent (~10 min at 2 s blocks). */
+const SILENT_RECHECK_BLOCKS = 300;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface ReactivatePlan {
@@ -88,6 +95,12 @@ export class Engine {
    * before then except a newer heartbeat, which only moves it later, so no query is needed.
    */
   private silenceDue = new Map<Hex, bigint>();
+  /** Already-silent triggers: the (free) count of matching entities when silence was handled. */
+  private silenceCount = new Map<Hex, number>();
+  /** What the last refresh listed, compared with free counts each poll (see `changed`). */
+  private listed = { triggers: -1, workers: -1 };
+  private workerKeys = new Set<string>();
+  private refreshTimer: NodeJS.Timeout | undefined;
   /** Per-trigger timestamps of receipts we wrote in the last hour (gas cap). */
   private recent = new Map<Hex, number[]>();
   private timers = new Set<NodeJS.Timeout>();
@@ -168,7 +181,8 @@ export class Engine {
     this.loop("flush", this.o.flushMs ?? 5_000, () => this.flush());
     this.loop("poll", this.o.pollMs ?? 30_000, () => this.poll());
     this.loop("sweep", this.o.sweepMs ?? 30_000, () => this.sweep());
-    this.loop("refresh", this.o.refreshMs ?? 10 * 60_000, () => this.refresh());
+    // Safety net only: changes are picked up from free counts (each poll) and EntityPatched.
+    this.loop("refresh", this.o.refreshMs ?? 30 * 60_000, () => this.refresh());
     await this.poll().catch((e) => this.fail("poll", e));
     await this.sweep().catch((e) => this.fail("sweep", e));
   }
@@ -196,6 +210,7 @@ export class Engine {
 
   stop() {
     this.stopped = true;
+    clearTimeout(this.refreshTimer);
     for (const t of this.timers) clearTimeout(t);
     this.timers.clear();
     this.unwatch?.();
@@ -208,6 +223,7 @@ export class Engine {
     const allow = this.o.triggerCreators;
     const accepted = allow.length === 0 ? triggers : triggers.filter((t) => allow.includes(lower(t.creator)));
     this.stats.triggersNotAllowed = triggers.length - accepted.length;
+    this.listed.triggers = triggers.length + invalid.length;
     const sealed = await this.loadSealedJobs();
     this.triggers = new Map([...accepted, ...sealed].map((t) => [t.key, t]));
     for (const i of invalid) this.o.log.debug({ trigger: i.key, error: i.error }, "ignoring invalid trigger");
@@ -237,6 +253,8 @@ export class Engine {
   private async refreshWorkers(): Promise<number> {
     const workers = await listWorkers(this.o.reader, this.workerPayloads);
     pruneCache(this.workerPayloads, workers.map((w) => w.key));
+    this.listed.workers = workers.length;
+    this.workerKeys = new Set(workers.map((w) => lower(w.key)));
     const addrs = [...new Set([...workers.map((w) => lower(w.creator)), lower(this.o.address)])].sort();
     this.trustedWorkers = new Set(addrs);
     this.rank = Math.max(0, addrs.indexOf(lower(this.o.address)));
@@ -254,10 +272,40 @@ export class Engine {
         if (creators && !creators.has(lower(e.owner))) return;
         this.pending.add(e.entityKey);
       },
-      onExpiryExtended: (e) => guard("ws extend", this.expiry.onExtended(e.entityKey, e.expiresAt, e.blockNumber)),
+      onExpiryExtended: (e) => {
+        // A trigger's own lifetime moved: keep the cached record's deadline current.
+        const t = this.triggers.get(e.entityKey);
+        if (t && e.expiresAt > t.expiresAt) t.expiresAt = e.expiresAt;
+        guard("ws extend", this.expiry.onExtended(e.entityKey, e.expiresAt, e.blockNumber));
+      },
+      // A trigger's spec or status, or a worker's registration, changed: reload soon. A patch
+      // keeps the counts the same, so this is the only way to see it before the safety refresh.
+      onEntityPatched: (e) => {
+        if (this.triggers.has(e.entityKey) || this.workerKeys.has(lower(e.entityKey))) this.refreshSoon();
+      },
       onEntityDeleted: (e) => guard("ws delete", this.expiry.onDeleted(e.entityKey, e.blockNumber)),
       onError: (err) => this.fail("ws", err),
     });
+  }
+
+  /** Debounced refresh (a burst of patches costs one reload). */
+  private refreshSoon(ms = 5_000) {
+    if (this.refreshTimer || this.stopped) return;
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = undefined;
+      if (this.o.gate?.blocked) return this.refreshSoon(this.o.gate.retryInMs + 1_000);
+      void this.refresh().catch((e) => this.fail("refresh", e));
+    }, ms);
+  }
+
+  /**
+   * Did triggers or workers appear, disappear, pause or resume since the last refresh? Two free
+   * counts instead of two billed lists. (Patches are caught by EntityPatched instead.)
+   */
+  private async changed(head: bigint): Promise<boolean> {
+    if (this.listed.triggers < 0) return true;
+    const [t, w] = await Promise.all([countTriggers(this.o.reader, "active", head), countWorkers(this.o.reader, head)]);
+    return t !== this.listed.triggers || w !== this.listed.workers;
   }
 
   private createdCreators(): Set<string> | null {
@@ -285,9 +333,12 @@ export class Engine {
     }
     const keys = [...this.pending];
     this.pending.clear();
+    const filters = [...onCreate.map((t) => t.spec.cond as QueryFilter), ...this.expiry.queryWatchFilters()];
     let rows;
+    let head: bigint;
     try {
-      rows = await fetchCandidates(this.o.reader, keys);
+      head = await this.o.reader.getBlockNumber();
+      rows = await fetchCandidates(this.o.reader, keys, filters, head);
     } catch (e) {
       for (const k of keys) this.pending.add(k); // keep them for the next flush (e.g. after a 429)
       throw e;
@@ -299,30 +350,41 @@ export class Engine {
         if (m.createdAt > t.createdAt) await this.fire(t, onCreateFiring(m));
       }
     }
-    await this.expiry.onCreated(rows, await this.o.reader.getBlockNumber());
+    await this.expiry.onCreated(rows, head);
   }
 
   /** Pollers for conditions no event can signal: silence and counts. */
   private async poll() {
     const head = await this.o.reader.getBlockNumber();
+    if (await this.changed(head)) {
+      this.o.log.info("triggers or workers changed (free count); refreshing");
+      await this.refresh();
+    }
     for (const t of this.triggers.values()) {
       if (this.o.gate?.blocked) return; // rate limited mid-pass: the rest waits for the next tick
       const c = t.spec.cond;
       try {
         let firing: Firing | undefined;
         if (c.type === "on_silence") {
-          if (head < (this.silenceDue.get(t.key) ?? 0n)) continue;
+          if (head < (this.silenceDue.get(t.key) ?? 0n)) {
+            // Silent and handled: a resumed heartbeat changes the free count; only then re-check.
+            const known = this.silenceCount.get(t.key);
+            if (known === undefined || (await countMatching(this.o.reader, conditionExpression(c), head)) === known) continue;
+          }
           const r = await evalOnSilence(this.o.reader, c, head);
           // Heard recently: the next possible silence is newest + silence_blocks.
           if (!r.firing) {
             this.silenceDue.set(t.key, r.dueAt);
+            this.silenceCount.delete(t.key);
             continue;
           }
           await this.fire(t, r.firing);
-          // Silent and handled: look again at half the window, so a heartbeat that resumes is
-          // seen in time for the next episode. Not handled (error, cap): retry next poll.
+          // Silent and handled: watch the free count, with a billed re-check at least every
+          // 10 min (a heartbeat landing as another expires keeps the count equal). Not handled
+          // (error, cap): retry next poll.
           if (this.handled(t.key, r.firing.epoch)) {
-            this.silenceDue.set(t.key, head + BigInt(Math.max(1, Math.floor(c.silence_blocks / 2))));
+            this.silenceCount.set(t.key, await countMatching(this.o.reader, conditionExpression(c), head));
+            this.silenceDue.set(t.key, head + BigInt(Math.max(c.silence_blocks, SILENT_RECHECK_BLOCKS)));
           }
           continue;
         } else if (c.type === "on_count") {
@@ -387,6 +449,8 @@ export class Engine {
 
   private async fire(t: TriggerRecord, f: Firing) {
     const id = firedId(t.key, f.epoch);
+    // An expired trigger is over, even if the safety refresh hasn't dropped it yet.
+    if (f.evidenceBlock >= t.expiresAt) return;
     if (this.o.store.data.fired[id] || this.inflight.has(id) || this.dryFired.has(id)) return;
     const sealed = t.mode === "sealed";
     const job = sealed ? this.o.store.data.sealed[t.key] : undefined;

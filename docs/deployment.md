@@ -89,7 +89,7 @@ The reference deployment doesn't use them.
 | `MAX_RECEIPTS_PER_TRIGGER_PER_HOUR` | No | `12` | Gas guard: receipts per trigger per hour from this worker. |
 | `SWEEP_SECONDS` | No | `30` | Read budget: how often the expiry index is compared with the head. It only queries Arkiv for entities past a deadline. |
 | `POLL_SECONDS` | No | `30` | Read budget: silence/count pollers. Silence checks are also scheduled from the newest heartbeat, so most ticks cost nothing. |
-| `REFRESH_SECONDS` | No | `600` | Read budget: full reload of triggers, workers and the expiry index (WebSocket events cover the time in between). |
+| `REFRESH_SECONDS` | No | `1800` | Read budget: safety-net full reload of triggers, workers and the expiry index. Changes show up sooner: free `arkiv_getEntityCount` checks every poll, and `EntityPatched` events. |
 | `FLUSH_SECONDS` | No | `5` | Read budget: batch window for WebSocket `EntityCreated` keys (one query per batch, for all triggers). |
 | `TELEGRAM_BOT_TOKEN` | For Telegram delivery | | Bot used to deliver sealed alerts. Without it, Telegram jobs fail delivery and write no receipt. |
 | `PORT` / `WORKER_PORT` | No | `8787` | Listen port; `PORT` wins if set. The Caddyfile proxies to 8787. |

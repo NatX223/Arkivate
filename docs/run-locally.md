@@ -46,7 +46,7 @@ others with a plain transfer.
 | `HOST` | worker | No (default `0.0.0.0`; `127.0.0.1` when `NODE_ENV=production`) |
 | `TRIGGER_CREATORS` | worker | No (empty = accept public triggers and sealed hand-offs from any creator) |
 | `MAX_RECEIPTS_PER_TRIGGER_PER_HOUR` | worker | No (default `12`) |
-| `SWEEP_SECONDS` / `POLL_SECONDS` / `REFRESH_SECONDS` / `FLUSH_SECONDS` | worker | No (defaults `30` / `30` / `600` / `5`): the read budget, see [deployment.md](deployment.md) |
+| `SWEEP_SECONDS` / `POLL_SECONDS` / `REFRESH_SECONDS` / `FLUSH_SECONDS` | worker | No (defaults `30` / `30` / `1800` / `5`): the read budget, see [deployment.md](deployment.md) |
 | `CORS_ORIGINS` | worker | No (default `http://localhost:3000`; exact origins, comma-separated, no `*`) |
 | `TELEGRAM_BOT_TOKEN` | worker | For Telegram delivery |
 | `SKIP_SEALED` | worker | No. Demo switch only: accepts sealed jobs and never fires them |
