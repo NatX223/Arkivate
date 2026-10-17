@@ -55,7 +55,7 @@ export type Store = Low<StoreData>;
 export const firedId = (trigger: Hex, epoch: string) => `${trigger}|${epoch}`;
 export const pinId = (trigger: Hex, key: Hex) => `${trigger}|${key}`;
 
-/** Local job store: a JSON file per worker identity under DATA_DIR (a GCS volume on Cloud Run). */
+/** Local job store: a JSON file per worker identity under DATA_DIR (/var/lib/arkivate on the reference VMs). */
 export async function openStore(dataDir: string, workerName: string): Promise<Store> {
   mkdirSync(dataDir, { recursive: true });
   const db = await JSONFilePreset<StoreData>(join(dataDir, `${workerName}.json`), {

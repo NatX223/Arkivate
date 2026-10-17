@@ -15,6 +15,7 @@ import type { Logger } from "pino";
 import { recoverMessageAddress, type Hex } from "viem";
 import { z } from "zod";
 import type { ChainWriter } from "./chain.js";
+import { cors } from "./cors.js";
 import type { Store } from "./store.js";
 
 const hex32 = z.string().regex(/^0x[0-9a-fA-F]{64}$/);
@@ -44,7 +45,10 @@ export interface HandoffDeps {
   log: Logger;
   address: Hex;
   writer: () => ChainWriter | null;
-  corsOrigins: string;
+  /** Exact browser origins allowed to call `POST /sealed`. */
+  corsOrigins: readonly string[];
+  /** Sealed entity creators this worker accepts hand-offs from (lowercase). Empty = any. */
+  triggerCreators: readonly string[];
   onAccepted: (sealedKey: Hex) => Promise<void>;
 }
 
@@ -54,19 +58,7 @@ export interface HandoffDeps {
  */
 export function handoffRouter(d: HandoffDeps): Router {
   const router = express.Router();
-  const allowed = d.corsOrigins.split(",").map((o) => o.trim()).filter(Boolean);
-  router.use("/sealed", (req, res, next) => {
-    const origin = req.headers.origin;
-    if (allowed.includes("*")) res.setHeader("access-control-allow-origin", "*");
-    else if (origin && allowed.includes(origin)) {
-      res.setHeader("access-control-allow-origin", origin);
-      res.setHeader("vary", "origin");
-    }
-    res.setHeader("access-control-allow-methods", "POST, OPTIONS");
-    res.setHeader("access-control-allow-headers", "content-type");
-    if (req.method === "OPTIONS") return void res.sendStatus(204);
-    next();
-  });
+  router.use("/sealed", cors(d.corsOrigins, "POST, OPTIONS"));
 
   // Concurrent identical hand-offs share one acceptance write.
   const inflight = new Map<string, Promise<{ status: number; body: unknown }>>();
@@ -110,6 +102,10 @@ async function accept(d: HandoffDeps, b: z.infer<typeof Body>): Promise<{ status
   const attrs = sealed.attributes as Record<string, { value: unknown } | undefined>;
   if (attrs.entity_type?.value !== ENTITY_TYPES.sealed || attrs.project?.value !== PROJECT) {
     throw new HandoffError(400, "that key is not an Arkivate sealed entity");
+  }
+  const allow = d.triggerCreators;
+  if (allow.length > 0 && !allow.includes(sealed.creator.toLowerCase())) {
+    throw new HandoffError(403, `this worker only accepts sealed jobs created by its TRIGGER_CREATORS allowlist; ${sealed.creator} is not on it`);
   }
   const worker = String(attrs.worker?.value ?? "");
   if (worker.toLowerCase() !== d.address.toLowerCase()) throw new HandoffError(403, "this sealed job names a different worker");

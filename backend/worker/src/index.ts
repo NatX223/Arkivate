@@ -1,4 +1,5 @@
 #!/usr/bin/env -S npx tsx
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import pino from "pino";
@@ -6,6 +7,7 @@ import { formatEther, type Hex } from "viem";
 import { CHAIN_ID, txUrl } from "@arkivate/core";
 import { loadConfig, makeReader, makeWallet, makeWsReader } from "@arkivate/core/server";
 import { ChainWriter } from "./chain.js";
+import { cors } from "./cors.js";
 import { deliver } from "./deliver.js";
 import { Engine } from "./engine.js";
 import { handoffRouter } from "./handoff.js";
@@ -15,17 +17,32 @@ const log = pino({ name: "arkivate-worker" });
 const HEARTBEAT_MS = 6 * 60 * 60_000;
 const FUNDING_CHECK_MS = 60_000;
 
+/** Short commit of the running checkout; GIT_SHA when git or the .git dir isn't there. */
+function codeVersion(fallback: string | undefined): string {
+  try {
+    const repo = fileURLToPath(new URL("../../..", import.meta.url));
+    return execFileSync("git", ["rev-parse", "--short", "HEAD"], { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return fallback ?? "unknown";
+  }
+}
+
 async function main() {
   log.info("worker starting");
   const env = loadConfig(["WORKER_PRIVATE_KEY"]);
   const port = env.PORT ?? env.WORKER_PORT;
+  const host = env.HOST ?? (env.NODE_ENV === "production" ? "127.0.0.1" : "0.0.0.0");
+  const version = codeVersion(env.GIT_SHA);
   const dataDir = env.DATA_DIR ?? fileURLToPath(new URL("../data", import.meta.url));
   log.info(
     {
       worker: env.WORKER_NAME,
+      version,
       rpc: env.ARKIV_RPC_HTTP,
+      host,
       port,
       dataDir,
+      corsOrigins: env.CORS_ORIGINS,
       accessKey: env.ARKIV_ACCESS_KEY ? "set" : "missing",
       endpoint: env.PUBLIC_ENDPOINT ?? "(none)",
       triggerCreators: env.TRIGGER_CREATORS.length > 0 ? env.TRIGGER_CREATORS : "any",
@@ -101,15 +118,17 @@ async function main() {
       address,
       writer: () => (live ? chain : null),
       corsOrigins: env.CORS_ORIGINS,
+      triggerCreators: env.TRIGGER_CREATORS,
       onAccepted: (k) => engine.activateSealed(k),
     }),
   );
-  app.get("/health", (_req, res) => {
-    // Public status only: the web app's Workers page reads it straight from the browser.
-    res.setHeader("access-control-allow-origin", "*");
+  // Public status only; the web app's Workers page reads it from the browser, so CORS_ORIGINS applies.
+  app.get("/health", cors(env.CORS_ORIGINS, "GET"), (_req, res) => {
     res.json({
       ok: true,
       name: env.WORKER_NAME,
+      version,
+      uptimeSeconds: Math.floor(process.uptime()),
       address,
       chainId,
       mode: live ? "live" : "dry-run",
@@ -124,7 +143,7 @@ async function main() {
       stats: engine.stats,
     });
   });
-  app.listen(port, () => log.info({ port }, "listening"));
+  app.listen(port, host, () => log.info({ host, port }, "listening"));
 
   const shutdown = () => {
     log.info("shutting down");
