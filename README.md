@@ -249,73 +249,116 @@ with `permissionlessExtension`, anyone can keep postponing a `follow` deadline. 
 
 ## Why this pillar
 
+The people below are illustrative scenarios, not real users.
+
 ### Censorship Resistance
 
-*Who is harmed if automation is censored or shut down?* The person whose listing lapses, whose alert
-never arrives, whose deadline passes unnoticed. With a single operator, the operator can be
-pressured to drop a job, or skip it, and there is no record either way.
+**Who is harmed:** a seller has a 7-day listing on an Arkiv marketplace and relies on the
+marketplace's renewal bot to keep it alive. The bot's operator is pressured to push the seller off
+the market, so it quietly skips the renewal. The listing expires mid-sale, and the seller has
+nothing to show that a renewal was ever owed. On their side it looks like bad luck.
 
-Here every firing is a public receipt that nobody can delete, signed by the worker that acted. Any
-number of independent workers can run the same trigger, and if one goes down the next fires. For a
-sealed job assigned to one worker, a skip is provable: the acceptance is burned, the reveal is
-burned, and `verify` turns "it never fired" into `SKIPPED` from public reads.
+**How Arkivate removes it:**
+
+- **No single operator.** The seller's keep-alive trigger is public, and any worker in the network
+  can run it. If one worker drops the job, the next one in rank fires 12 s later. Measured: with
+  worker-1 down, worker-2 extended on its own (20 s from event to receipt).
+- **Every renewal leaves proof.** The extension and a burned receipt land in one transaction (Flow 1),
+  so "renewed" and "receipt exists" can't diverge, and no worker can delete its receipt afterwards.
+- **A skip becomes evidence.** For a sealed job, the assigned worker's acceptance is burned. If it
+  never fires, the owner reveals, and `verify` returns `SKIPPED` from public reads (Flow 4: met at
+  655860, deadline 656010, no receipt).
 
 ### Privacy
 
-*Who is harmed if automations leak?* An automation reveals intent: "alert me if X halts" says "I
-hold X" or "I depend on X". On a public chain, a public trigger tells everyone.
+**Who is harmed:** someone holds a position in a small protocol and wants an alert if that
+protocol's heartbeat entity on Arkiv goes quiet. Posting the rule to a public automation service
+tells everyone what they hold and when they will react. The webhook URL in the rule points at their
+own server.
 
-A sealed trigger puts only `keccak256(spec ‖ salt)` and the chosen worker on Arkiv. Alert
-destinations (webhook URLs, Telegram chat IDs) go only to that worker and never touch Arkiv, not
-even hashed. We found and fixed a leak in our own design
-([F17](arkiv/friction.md#f17--our-design-worth-a-line-in-arkivs-privacy-docs-hashes-of-public-data-arent-private-on-arkiv)):
-sealed receipts first published `keccak256("create:" + matched_key)`, which anyone can brute-force
-over public entity keys (two sealed jobs on the same event produced identical epochs,
-receipts `0x591e449e…` and `0x33aba737…`). The epoch now mixes in the job's secret salt.
+**How Arkivate removes it:**
 
-Residual leak, stated plainly: a sealed receipt reveals **that** a sealed trigger fired and **when**
-(`evidence_block`), and which worker ran it. It never reveals **what** it watched or **where** the
-alert went.
+- **Only a salted hash goes public.** A sealed trigger puts `keccak256(spec ‖ salt)` and the chosen
+  worker's address on Arkiv. The spec travels only to that worker, over a signed HTTPS hand-off.
+- **Destinations never touch Arkiv, not even hashed.** Webhook URLs and Telegram chat IDs stay on the
+  owner's machine and the chosen worker's local store. A scan of every live `project = arkivate`
+  entity for our test destinations and their digests found 0 hits.
+- **We closed a leak in our own design** ([F17](arkiv/friction.md#f17--our-design-worth-a-line-in-arkivs-privacy-docs-hashes-of-public-data-arent-private-on-arkiv)).
+  Sealed receipts first published `keccak256("create:" + matched_key)`, which anyone can brute-force
+  over public entity keys. Two jobs on the same event produced identical epochs (receipts
+  `0x591e449e…` and `0x33aba737…`). The epoch now mixes in the job's secret salt.
+- **What still leaks:** a sealed receipt shows **that** a sealed trigger fired, **when**
+  (`evidence_block`), and which worker ran it. It never shows **what** was watched or **where** the
+  alert went.
 
 ### Open Source
 
-*Who is harmed if the trigger engine is closed?* Every Arkiv app that has to write, host and trust
-its own watcher. Arkivate is one MIT-licensed engine with a shared spec any Arkiv app can post to,
-and an open worker network anyone can join with one command and their own wallet. Receipts,
-acceptances and worker registrations are all plain Arkiv entities, so other apps can read and build
-on them without our code.
+**Who is harmed:** a developer building a new Arkiv app needs "renew this before it expires" and
+"tell me when it's gone". Arkiv has no expiry event ([F12](arkiv/friction.md#f12--no-expiration-event-expiry-has-to-be-detected-by-sweeping))
+and can't tell expired from deleted ([F13](arkiv/friction.md#f13--noentityfounderror-cant-tell-expired-from-deleted-or-never-existed)).
+So the developer spends days writing a deadline index, a sweeper and a server to host them, and the
+day they stop paying for that server, their users' data starts expiring.
+
+**How Arkivate removes it:**
+
+- **One shared engine.** The developer posts a trigger in a documented JSON spec
+  ([examples](backend/cli/examples/)) instead of writing a watcher. Expiry detection, expired vs
+  deleted, dedupe and receipts are already solved, under MIT.
+- **An open network.** The workers that run the trigger aren't the developer's to keep alive. Anyone
+  can add one from a clone with their own wallet ([Join the network](#join-the-network)), and each
+  worker shows up on Arkiv as a plain `worker` entity.
+- **Plain Arkiv data.** Triggers, receipts and acceptances are ordinary entities, so another app can
+  read and build on them without running our code.
 
 ## Why Arkiv
 
-| Built on… | What would break |
-|---|---|
-| Postgres behind our API | The operator could edit or delete receipts; "it never fired" would be our word against yours. |
-| IPFS | Content is immutable, but there is no queryable "receipts for trigger T, epoch E", no expiry, and no native notion of who wrote it. |
-| A subgraph or indexer | Another party to trust for every read, and a lag between the chain and the answer. |
-| Arkiv | Entities have a lifespan (the thing we react to), receipts can be made readonly and ownerless, attribute queries answer "has anyone fired this epoch?" directly, and `$creator` authenticates every write. |
+Arkivate needs four things from its data layer: data with a lifespan to react to, receipts that
+nobody can edit or delete, an authenticated author on every record, and queries any worker can ask
+directly ("has a registered worker already fired this epoch?"). This is what breaks without Arkiv:
 
-**Kept off Arkiv on purpose:** alert destinations (URLs, chat IDs), sealed specs before a reveal, the
-destination digest the hand-off signature covers, private keys, access keys, and any real identity.
+| If Arkivate used… | What breaks for Arkivate | Why |
+|---|---|---|
+| **Postgres** | Receipts stop being proof, and workers can't share state. | The database admin can `UPDATE` or `DELETE` any receipt, so "the job fired" or "the job was skipped" becomes the operator's word. Independent workers would all need write access to one database, and whoever runs it can lock them out. |
+| **IPFS** | Dedupe, expiry and authorship all disappear. | Content is immutable but can't be queried by attribute, so "receipts for trigger T, epoch E" needs a separate index. Content has no lifespan, so there is nothing to react to. A CID proves content, not who published it, so every receipt would need its own signature scheme. |
+| **A subgraph** | Arkivate could read but not write, and couldn't see expiry. | A subgraph indexes events from a chain. It can't hold triggers or receipts, and expiry emits no event ([F12](arkiv/friction.md#f12--no-expiration-event-expiry-has-to-be-detected-by-sweeping)), so there is nothing to index. Every read would also trust the indexer's operator and lag behind the chain. |
+| **Our own API** | We become the single operator Arkivate exists to replace. | We could skip jobs silently, be pressured to drop a trigger, and see every rule and destination. Other workers could only join if we let them, and nobody could check our history. |
+
+On Arkiv, entities expire by design; `readonly` plus a transfer to `0x…dEaD` makes a receipt
+permanent; `$creator` authenticates every write without a scheme of our own; and attribute queries
+answer the dedupe question in one call.
+
+**Kept off Arkiv on purpose:**
+
+- **Alert destinations** (webhook URLs, Telegram chat IDs): they identify a person or their
+  infrastructure. Even hashed they can be brute-forced, because chat IDs and URLs are low-entropy
+  ([F17](arkiv/friction.md#f17--our-design-worth-a-line-in-arkivs-privacy-docs-hashes-of-public-data-arent-private-on-arkiv)),
+  and the hackathon rules ban personal data in any form.
+- **The destination digest the hand-off signature covers:** it is a hash of the destination, so the
+  same brute-force reasoning applies. Only the owner and the chosen worker need it.
+- **Sealed specs and salts before a reveal:** the spec is the intent being protected, and the salt
+  would let anyone open the commitment. They are published only if the owner opens a dispute.
+- **Private keys and the Arkiv access key:** they are credentials. Keys live in `.env` or Secret
+  Manager, and the access key stays server-side; the web app's read proxy adds it.
+- **Real identities** (names, emails): nothing in Arkivate needs them. Trust comes from wallet
+  addresses (`$creator`), and all demo data is synthetic.
+
 Our sealed-flow test scanned every live `project = arkivate` entity (attributes and payloads, plain
 and hex) for the test destinations and their digests: 0 hits.
 
 ## How Arkivate uses Arkiv
 
-| Arkiv feature | Where in code | Why |
+Only the features the design rests on. Remove any one row and a part of the product stops working.
+
+| Arkiv feature | Product need it serves | Where in code |
 |---|---|---|
-| Entity expiration | every write; `worker` 1 day ([`chain.ts`](backend/worker/src/chain.ts)), receipts 30 days | the lifespan is what triggers react to; a dead worker drops out by itself |
-| `ExpirationTime.atBlock` | Reactivate extension in [`chain.ts`](backend/worker/src/chain.ts) `writeReceipt`; CLI `demo-feed --extend` | extend to an exact block; durations count from now, not from the current expiry (F14) |
-| `extendEntity` | worker heartbeat and re-registration ([`chain.ts`](backend/worker/src/chain.ts)) | keeps the worker's registration alive |
-| `permissionlessExtension` | triggers ([`cli`](backend/cli/src/index.ts) `create`), receipts, acceptances, `listing` demo data | lets a worker (or anyone) keep useful data alive; checked before Reactivate ([`engine.ts`](backend/worker/src/engine.ts)) |
-| `readonly` | receipts, acceptances, sealed, reveals | evidence can't be edited |
-| Ownership transfer to `0x…dEaD` (`ownershipChanges`) | [`chain.ts`](backend/worker/src/chain.ts), CLI `reveal`, web reveal | burned evidence can't be deleted, even by its creator |
-| `executeBatch` + `predictEntityKeys` | [`chain.ts`](backend/worker/src/chain.ts) | create + burn (+ extend) in one atomic transaction; writes are serialised per wallet because predicted keys are nonce-derived |
-| `$creator` trust via `.createdBy` / `$creator = addr(…)` | [`query.ts`](backend/core/src/query.ts), [`verify.ts`](backend/core/src/verify.ts), [`handoff.ts`](backend/worker/src/handoff.ts) | the only authentication Arkiv offers; `project` / `entity_type` / `$owner` are never trusted |
-| Typed `u64` attributes | [`entities.ts`](backend/core/src/entities.ts), typed literals in [`spec.ts`](backend/core/src/spec.ts) | blocks and timestamps compare correctly; a bare number would be `i32` and match nothing |
-| Live events: `EntityCreated`, `ExpiryExtended`, `EntityDeleted` | [`engine.ts`](backend/worker/src/engine.ts) `watchEntityEvents` | push path for `on_create`, `on_extend`, `on_delete` and the expiry index |
-| Filtered count via raw `arkiv_getEntityCount` | [`conditions.ts`](backend/core/src/conditions.ts) `countMatching` | `on_count`; the SDK's `getEntityCount()` is chain-wide only (F4) |
-| Pinned `atBlock` pagination | [`expiry.ts`](backend/core/src/expiry.ts) `snapshotWatch`, [`conditions.ts`](backend/core/src/conditions.ts) `evalOnSilence` | consistent multi-page snapshots of the watched set |
-| `patchEntity` | trigger pause/resume (`status`), worker endpoint update | mutable state only where it belongs |
+| **Entity expiration** | The thing Arkivate reacts to (keep-alive, `on_expiring`, `on_expire`). It also maintains the worker network: a worker's 1-day registration lapses when it stops heartbeating, so dead workers leave without anyone removing them. Arkiv emits no expiry event, so workers index deadlines and sweep them (F12). | [`worker/src/expiry.ts`](backend/worker/src/expiry.ts) `sweep`; [`worker/src/chain.ts`](backend/worker/src/chain.ts) `register` / `heartbeat` |
+| **`permissionlessExtension` + `extendEntity` to `ExpirationTime.atBlock`** | Reactivate: a worker can keep *someone else's* data alive without owning it, to an exact block (relative durations count from now, F14). | [`worker/src/engine.ts`](backend/worker/src/engine.ts) `planReactivate`; [`worker/src/chain.ts`](backend/worker/src/chain.ts) `writeReceipt` |
+| **`readonly` + ownership transfer to `0x…dEaD`** | Evidence nobody can edit or delete, not even the worker that wrote it. That permanence is what turns a missing receipt into a provable skip. Applied to receipts, acceptances and reveals. | [`worker/src/chain.ts`](backend/worker/src/chain.ts) `writeReceipt` / `writeAcceptance`; [`cli/src/index.ts`](backend/cli/src/index.ts) `reveal` |
+| **`executeBatch` + `predictEntityKeys`** | Atomic Reactivate: extend + create receipt + burn in one transaction, so the data is extended if and only if the receipt exists. | [`worker/src/chain.ts`](backend/worker/src/chain.ts) |
+| **`$creator` (`.createdBy`, `$creator = addr(…)`)** | Trust without accounts: only receipts from registered workers count for dedupe, only the sealed owner's reveal counts in a dispute, and a worker accepts a hand-off only if it is signed by the sealed entity's creator. | [`worker/src/engine.ts`](backend/worker/src/engine.ts) `peerReceipt`; [`core/src/verify.ts`](backend/core/src/verify.ts); [`worker/src/handoff.ts`](backend/worker/src/handoff.ts) |
+| **Attribute queries with typed values** | Coordination between independent workers through Arkiv alone: "is there a receipt for (trigger, epoch)?" is one query. The same queries evaluate conditions, and a filtered `arkiv_getEntityCount` drives `on_count` (F4). Blocks are `u64`, so comparisons are correct. | [`core/src/records.ts`](backend/core/src/records.ts) `findReceipts`; [`core/src/query.ts`](backend/core/src/query.ts); [`core/src/conditions.ts`](backend/core/src/conditions.ts) `countMatching` |
+| **Live entity events** (`EntityCreated`, `ExpiryExtended`, `EntityDeleted`) | Reactions within seconds: `on_create`, `on_extend` and `on_delete` fire from events, and renewals keep the expiry index current between rebuilds. | [`worker/src/engine.ts`](backend/worker/src/engine.ts) `watch` |
+| **`atBlock` reads** | Consistent snapshots of everything a trigger watches, paged at one block. The planned dispute fix replays evidence at the reveal block (F19). | [`core/src/expiry.ts`](backend/core/src/expiry.ts) `snapshotWatch`; [`core/src/conditions.ts`](backend/core/src/conditions.ts) `evalOnSilence` |
 
 **Measurements** (Tiramisu, 16 Oct 2026; block time 2 s):
 
@@ -463,7 +506,8 @@ payloads: [`arkiv/schema.md`](arkiv/schema.md).
 
 ## Friction report
 
-19 entries, each with a repro: [`arkiv/friction.md`](arkiv/friction.md). The ones that shaped the
+19 entries, each with versions, numbered steps to reproduce, expected vs actual, our workaround and a
+suggestion for Arkiv: [`arkiv/friction.md`](arkiv/friction.md). The ones that shaped the
 design:
 
 - [F12](arkiv/friction.md#f12--no-expiration-event-expiry-has-to-be-detected-by-sweeping): no expiry event; expiry must be detected by sweeping deadlines.
