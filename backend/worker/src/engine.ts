@@ -13,6 +13,7 @@ import {
   sealedEpoch,
   type Destination,
   type Firing,
+  type RateGate,
   type Reader,
   type ReceiptOutcome,
   type TriggerRecord,
@@ -41,6 +42,8 @@ export interface EngineOptions {
   skipSealed: boolean;
   /** Sends a sealed alert to its private destination. */
   deliver: (d: Destination, a: Alert) => Promise<void>;
+  /** Shared 429 state: loops skip while it is backing off, and slow ×4 after repeated 429s. */
+  gate?: RateGate;
   pollMs?: number;
   sweepMs?: number;
   refreshMs?: number;
@@ -75,7 +78,9 @@ export class Engine {
   private dryFired = new Set<string>();
   /** Per-trigger timestamps of receipts we wrote in the last hour (gas cap). */
   private recent = new Map<Hex, number[]>();
-  private timers: NodeJS.Timeout[] = [];
+  private timers = new Set<NodeJS.Timeout>();
+  private started = false;
+  private stopped = false;
   private unwatch: (() => void) | undefined;
   private readonly expiry: ExpiryWatcher;
   readonly stats = {
@@ -87,6 +92,7 @@ export class Engine {
     deliveryFailures: 0,
     triggersNotAllowed: 0,
     errors: 0,
+    rateLimited: 0,
   };
 
   constructor(private readonly o: EngineOptions) {
@@ -136,21 +142,48 @@ export class Engine {
     }
   }
 
+  /**
+   * Initial load, then the loops. Safe to call again after it throws (boot retries it): the
+   * loops and the WS watcher are only set up once the first refresh has succeeded.
+   */
   async start() {
+    if (this.started) return;
     await this.refresh();
+    this.started = true;
     this.watch();
-    const every = (ms: number, fn: () => Promise<void>) =>
-      this.timers.push(setInterval(() => void fn().catch((e) => this.fail("timer", e)), ms));
-    every(this.o.flushMs ?? 2_000, () => this.flush());
-    every(this.o.pollMs ?? 30_000, () => this.poll());
-    every(this.o.sweepMs ?? 10_000, () => this.sweep());
-    every(this.o.refreshMs ?? 5 * 60_000, () => this.refresh());
-    await this.poll();
-    await this.sweep();
+    this.loop("flush", this.o.flushMs ?? 2_000, () => this.flush());
+    this.loop("poll", this.o.pollMs ?? 30_000, () => this.poll());
+    this.loop("sweep", this.o.sweepMs ?? 10_000, () => this.sweep());
+    this.loop("refresh", this.o.refreshMs ?? 5 * 60_000, () => this.refresh());
+    await this.poll().catch((e) => this.fail("poll", e));
+    await this.sweep().catch((e) => this.fail("sweep", e));
+  }
+
+  /**
+   * Run `fn` every `ms`, never overlapping. While the gate is backing off from a 429 the tick is
+   * skipped; after repeated 429s the interval is ×4 until a read succeeds.
+   */
+  private loop(name: string, ms: number, fn: () => Promise<void>) {
+    const gate = this.o.gate;
+    const schedule = (delay: number) => {
+      if (this.stopped) return;
+      const t = setTimeout(() => {
+        this.timers.delete(t);
+        void tick();
+      }, delay);
+      this.timers.add(t);
+    };
+    const tick = async () => {
+      if (!gate?.blocked) await fn().catch((e) => this.fail(name, e));
+      schedule(Math.max(ms * (gate?.slowdown ?? 1), gate?.retryInMs ?? 0));
+    };
+    schedule(ms);
   }
 
   stop() {
-    for (const t of this.timers) clearInterval(t);
+    this.stopped = true;
+    for (const t of this.timers) clearTimeout(t);
+    this.timers.clear();
     this.unwatch?.();
   }
 
@@ -240,6 +273,7 @@ export class Engine {
   private async poll() {
     const head = await this.o.reader.getBlockNumber();
     for (const t of this.triggers.values()) {
+      if (this.o.gate?.blocked) return; // rate limited mid-pass: the rest waits for the next tick
       const c = t.spec.cond;
       try {
         const firing =
@@ -437,6 +471,14 @@ export class Engine {
   }
 
   private fail(where: string, e: unknown) {
+    if (this.o.gate?.note(e)) {
+      this.stats.rateLimited++;
+      this.o.log.warn(
+        { where, retryInSeconds: Math.ceil(this.o.gate.retryInMs / 1000), consecutive: this.o.gate.consecutive },
+        "rate limited; backing off",
+      );
+      return;
+    }
     this.stats.errors++;
     this.o.log.error({ where, err: e instanceof Error ? e.message : String(e) }, "error");
   }

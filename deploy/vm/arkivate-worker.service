@@ -5,6 +5,9 @@ Description=Arkivate worker
 Documentation=https://github.com/NatX223/Arkivate/blob/main/docs/deploy-vm.md
 Wants=network-online.target
 After=network-online.target
+# Never give up restarting. A 429 no longer crashes the worker (it backs off in-process), so a
+# restart here means a real fault; 30 s between restarts keeps a crash loop from burning quota.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -17,7 +20,7 @@ Environment=DATA_DIR=/var/lib/arkivate
 # Binds 127.0.0.1:8787 (production default); Caddy terminates HTTPS in front of it.
 ExecStart=/usr/bin/node /opt/arkivate/backend/worker/node_modules/tsx/dist/cli.mjs /opt/arkivate/backend/worker/src/index.ts
 Restart=always
-RestartSec=5
+RestartSec=30
 # Hardening: the worker only writes its job store (DATA_DIR=/var/lib/arkivate).
 NoNewPrivileges=true
 PrivateTmp=true

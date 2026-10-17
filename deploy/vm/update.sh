@@ -29,7 +29,7 @@ if ! cmp -s "$APP_DIR/deploy/vm/$SERVICE.service" "/etc/systemd/system/$SERVICE.
 fi
 systemctl restart "$SERVICE"
 
-# The worker checks the chain before it starts listening, so give it a few seconds.
+# The worker listens before its first Arkiv read; /health shows "starting" or "rate_limited" until boot completes.
 host="$(awk 'NF && $1 !~ /^#/ { print $1; exit }' /etc/caddy/Caddyfile 2>/dev/null || true)"
 url="${host:+https://$host/health}"
 url="${url:-http://127.0.0.1:8787/health}"
