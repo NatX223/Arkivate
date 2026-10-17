@@ -111,12 +111,30 @@ export class RateGate {
 
 export type FetchFn = typeof fetch;
 
-/** A `fetch` for viem's http transport that reports every response's status to `gate`. */
+/** Methods Arkiv bills (`Arkiv-Cost`); everything else is free and keeps working at 100% quota. */
+const BILLED = new Set(["arkiv_query"]);
+
+function billed(body: unknown): boolean {
+  if (typeof body !== "string") return true;
+  try {
+    const v = JSON.parse(body) as { method?: unknown } | { method?: unknown }[];
+    return (Array.isArray(v) ? v : [v]).some((c) => typeof c.method === "string" && BILLED.has(c.method));
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * A `fetch` for viem's http transport that reports every response's status to `gate`.
+ * Only a successful billed call clears a backoff: with the quota spent, `eth_blockNumber` and
+ * `arkiv_getEntityCount` still succeed while every `arkiv_query` gets 429, so their success says
+ * nothing about whether queries work again.
+ */
 export function gatedFetch(gate: RateGate, base: FetchFn = fetch): FetchFn {
   return (async (input: Parameters<FetchFn>[0], init?: Parameters<FetchFn>[1]) => {
     const res = await base(input, init);
     if (res.status === 429) gate.limited(parseRetryAfter(res.headers.get("retry-after")));
-    else if (res.ok) gate.ok();
+    else if (res.ok && (gate.consecutive === 0 || billed(init?.body))) gate.ok();
     return res;
   }) as FetchFn;
 }

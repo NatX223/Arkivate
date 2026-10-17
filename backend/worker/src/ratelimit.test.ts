@@ -53,9 +53,21 @@ describe("rate-limit helpers", () => {
     await f("http://x");
     await f("http://x");
     expect(gate.slowdown).toBe(4);
-    await f("http://x");
+    await f("http://x", { body: JSON.stringify({ method: "arkiv_query" }) });
     expect(gate.slowdown).toBe(1);
     expect(gate.blocked).toBe(false);
+  });
+
+  it("a free call succeeding (eth_*, count) does not clear a query backoff", async () => {
+    const gate = new RateGate(() => 0);
+    const responses = [429, 200, 200];
+    const f = gatedFetch(gate, async () => new Response("{}", { status: responses.shift()! }));
+    await f("http://x", { body: JSON.stringify({ method: "arkiv_query" }) });
+    await f("http://x", { body: JSON.stringify({ method: "eth_blockNumber" }) });
+    expect(gate.consecutive).toBe(1);
+    expect(gate.blocked).toBe(true);
+    await f("http://x", { body: JSON.stringify({ method: "arkiv_query" }) });
+    expect(gate.consecutive).toBe(0);
   });
 });
 

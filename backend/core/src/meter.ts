@@ -1,10 +1,13 @@
 /**
- * RPC metering: calls and response bytes by method and by query shape. Browser-safe.
+ * RPC metering: calls, cost units and response bytes by method and by query shape. Browser-safe.
  *
- * Arkiv bills access keys in cost units that track response size, not just call count, so the
- * numbers that matter are bytes per shape. A shape is the query with its literals blanked out,
- * plus what it selects and its page size, e.g.
- *   select=key,payload where=project = "?" && entity_type = "?" limit=200
+ * Arkiv reports what each response cost in an `Arkiv-Cost` header (and the key's usage in
+ * `Arkiv-Quota-Used-Percent`). Measured on Tiramisu: every `arkiv_query` costs a flat 100 units
+ * whatever it returns (69 B or 72 KB), and `arkiv_getEntityCount` / `eth_*` cost nothing. So the
+ * number that matters is queries per minute, not bytes (arkiv/friction.md F20).
+ *
+ * A shape is the query with its literals blanked out, plus what it selects and its page size, e.g.
+ *   select=key,payload where=project = str('?') AND entity_type = str('?') limit=200
  */
 
 import type { FetchFn } from "./ratelimit.js";
@@ -37,14 +40,17 @@ export function rpcShape(call: RpcBody): string {
 function blank(q: string): string {
   return q
     .replace(/"(?:[^"\\]|\\.)*"/g, '"?"')
+    .replace(/'(?:[^'\\]|\\.)*'/g, "'?'")
     .replace(/0x[0-9a-fA-F]+/g, "0x…")
     .replace(/\b\d+\b/g, "N")
     // Candidate batches: `$key = 0x… || $key = 0x… || …` → one group regardless of chunk size.
-    .replace(/(\$key = 0x…)( \|\| \$key = 0x…)+/g, "$key IN (…)");
+    .replace(/\$key = (?:key\()?0x…\)?(?:(?: \|\| | OR )\$key = (?:key\()?0x…\)?)+/g, "$key IN (…)");
 }
 
 export interface MeterRow {
   calls: number;
+  /** Cost units, from the `Arkiv-Cost` response header. */
+  units: number;
   bytes: number;
   limited: number;
 }
@@ -52,12 +58,16 @@ export interface MeterRow {
 export interface MeterSnapshot {
   sinceSeconds: number;
   calls: number;
+  units: number;
   bytes: number;
   limited: number;
   callsPerMinute: number;
+  unitsPerHour: number;
   bytesPerMinute: number;
+  /** Last `Arkiv-Quota-Used-Percent` seen (keyed requests only). */
+  quotaUsedPercent: number | null;
   byMethod: Record<string, MeterRow & { callsPerMinute: number }>;
-  /** Top shapes by bytes. */
+  /** Top shapes by cost units, then bytes. */
   topShapes: Array<{ shape: string } & MeterRow>;
 }
 
@@ -65,19 +75,21 @@ export class RpcMeter {
   private readonly started: number;
   private readonly methods = new Map<string, MeterRow>();
   private readonly shapes = new Map<string, MeterRow>();
+  quotaUsedPercent: number | null = null;
 
   constructor(private readonly now: () => number = Date.now) {
     this.started = now();
   }
 
-  record(call: RpcBody, bytes: number, limited = false) {
+  record(call: RpcBody, bytes: number, limited = false, units = 0) {
     const method = typeof call.method === "string" ? call.method : "?";
     for (const [map, k] of [
       [this.methods, method],
       [this.shapes, rpcShape(call)],
     ] as const) {
-      const row = map.get(k) ?? { calls: 0, bytes: 0, limited: 0 };
+      const row = map.get(k) ?? { calls: 0, units: 0, bytes: 0, limited: 0 };
       row.calls++;
+      row.units += units;
       row.bytes += bytes;
       if (limited) row.limited++;
       map.set(k, row);
@@ -87,27 +99,33 @@ export class RpcMeter {
   snapshot(top = 5): MeterSnapshot {
     const secs = Math.max(1, (this.now() - this.started) / 1000);
     let calls = 0;
+    let units = 0;
     let bytes = 0;
     let limited = 0;
     for (const r of this.methods.values()) {
       calls += r.calls;
+      units += r.units;
       bytes += r.bytes;
       limited += r.limited;
     }
+    const byCost = (a: [string, MeterRow], b: [string, MeterRow]) => b[1].units - a[1].units || b[1].bytes - a[1].bytes;
     return {
       sinceSeconds: Math.round(secs),
       calls,
+      units,
       bytes,
       limited,
       callsPerMinute: +((calls * 60) / secs).toFixed(1),
+      unitsPerHour: Math.round((units * 3600) / secs),
       bytesPerMinute: Math.round((bytes * 60) / secs),
+      quotaUsedPercent: this.quotaUsedPercent,
       byMethod: Object.fromEntries(
         [...this.methods]
-          .sort((a, b) => b[1].bytes - a[1].bytes)
+          .sort(byCost)
           .map(([m, r]) => [m, { ...r, callsPerMinute: +((r.calls * 60) / secs).toFixed(1) }]),
       ),
       topShapes: [...this.shapes]
-        .sort((a, b) => b[1].bytes - a[1].bytes)
+        .sort(byCost)
         .slice(0, top)
         .map(([shape, r]) => ({ shape, ...r })),
     };
@@ -125,13 +143,28 @@ export function parseRpcBody(body: unknown): RpcBody[] | undefined {
   }
 }
 
+/** The cost headers Arkiv puts on every response. */
+export interface CostHeaders {
+  /** `Arkiv-Cost`: units this response was billed. */
+  cost?: number | undefined;
+  /** `Arkiv-Quota-Used-Percent`: the access key's monthly usage. */
+  quotaUsedPercent?: number | undefined;
+}
+
+export function readCostHeaders(h: { get(name: string): string | null }): CostHeaders {
+  const num = (v: string | null) => (v === null || v.trim() === "" || Number.isNaN(Number(v)) ? undefined : Number(v));
+  return { cost: num(h.get("arkiv-cost")), quotaUsedPercent: num(h.get("arkiv-quota-used-percent")) };
+}
+
 /**
  * Record a response against its request. Batch responses are split per call (by each element's
- * own size); anything else is charged to its single call.
+ * own size, cost split evenly); anything else is charged to its single call.
  */
-export function meterExchange(meter: RpcMeter, calls: RpcBody[], status: number, text: string) {
+export function meterExchange(meter: RpcMeter, calls: RpcBody[], status: number, text: string, cost: CostHeaders = {}) {
   const limited = status === 429;
-  if (calls.length === 1) return meter.record(calls[0]!, text.length, limited);
+  if (cost.quotaUsedPercent !== undefined) meter.quotaUsedPercent = cost.quotaUsedPercent;
+  const units = (cost.cost ?? 0) / Math.max(1, calls.length);
+  if (calls.length === 1) return meter.record(calls[0]!, text.length, limited, units);
   let parts: unknown[] | undefined;
   try {
     const v = JSON.parse(text) as unknown;
@@ -139,7 +172,9 @@ export function meterExchange(meter: RpcMeter, calls: RpcBody[], status: number,
   } catch {
     // fall through: split evenly
   }
-  calls.forEach((c, i) => meter.record(c, parts ? JSON.stringify(parts[i]).length : Math.round(text.length / calls.length), limited));
+  calls.forEach((c, i) =>
+    meter.record(c, parts ? JSON.stringify(parts[i]).length : Math.round(text.length / calls.length), limited, units),
+  );
 }
 
 /** A `fetch` that meters every JSON-RPC exchange. Reads a clone, so the caller's body is untouched. */
@@ -148,10 +183,11 @@ export function meteredFetch(meter: RpcMeter, base: FetchFn = fetch): FetchFn {
     const res = await base(input, init);
     const calls = parseRpcBody(init?.body);
     if (calls) {
+      const cost = readCostHeaders(res.headers);
       void res
         .clone()
         .text()
-        .then((t) => meterExchange(meter, calls, res.status, t))
+        .then((t) => meterExchange(meter, calls, res.status, t, cost))
         .catch(() => undefined);
     }
     return res;
