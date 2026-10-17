@@ -1,4 +1,4 @@
-import { TIRAMISU_RPC_HTTP } from "@arkivate/core";
+import { RpcMeter, TIRAMISU_RPC_HTTP, meterExchange, rpcShape } from "@arkivate/core";
 
 /**
  * Read-only JSON-RPC proxy to Tiramisu. The keyless RPC allows ~100 queries/hour/IP, so browser
@@ -38,6 +38,20 @@ interface RpcCall {
   method?: unknown;
 }
 
+// Per server instance: calls and response bytes by method and query shape (arkiv/friction.md F20).
+const meter = new RpcMeter();
+const METER_LOG_MS = 60_000;
+let meterLoggedAt = Date.now();
+
+function logUsage(calls: RpcCall[], status: number, text: string) {
+  meterExchange(meter, calls, status, text);
+  console.log(JSON.stringify({ rpc: calls.map(rpcShape), status, bytes: text.length }));
+  if (Date.now() - meterLoggedAt >= METER_LOG_MS) {
+    meterLoggedAt = Date.now();
+    console.log(JSON.stringify({ rpcUsage: meter.snapshot() }));
+  }
+}
+
 const rpcError = (id: unknown, code: number, message: string) => ({ jsonrpc: "2.0", id: id ?? null, error: { code, message } });
 
 export async function POST(req: Request) {
@@ -71,5 +85,7 @@ export async function POST(req: Request) {
   const headers = new Headers({ "content-type": upstream.headers.get("content-type") ?? "application/json" });
   const retryAfter = upstream.headers.get("retry-after");
   if (retryAfter) headers.set("retry-after", retryAfter);
-  return new Response(await upstream.text(), { status: upstream.status, headers });
+  const out = await upstream.text();
+  logUsage(calls, upstream.status, out);
+  return new Response(out, { status: upstream.status, headers });
 }

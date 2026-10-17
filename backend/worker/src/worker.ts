@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import type { Logger } from "pino";
 import { formatEther, type Hex } from "viem";
-import { CHAIN_ID, RateGate, gatedFetch, txUrl, type Reader } from "@arkivate/core";
+import { CHAIN_ID, RateGate, RpcMeter, gatedFetch, meteredFetch, txUrl, type Reader } from "@arkivate/core";
 import { makeReader, makeWallet, makeWsReader, type Env, type Wallet } from "@arkivate/core/server";
 import { ChainWriter } from "./chain.js";
 import { cors } from "./cors.js";
@@ -16,6 +16,7 @@ import { FatalBootError, Status, bootWithBackoff } from "./supervisor.js";
 
 const HEARTBEAT_MS = 6 * 60 * 60_000;
 const FUNDING_CHECK_MS = 60_000;
+const METER_LOG_MS = 60_000;
 
 /** Short commit of the running checkout; GIT_SHA when git or the .git dir isn't there. */
 function codeVersion(fallback: string | undefined): string {
@@ -73,8 +74,9 @@ export async function startWorker(env: Env, log: Logger, deps: WorkerDeps = {}):
   );
 
   const gate = deps.gate ?? new RateGate();
+  const meter = new RpcMeter();
   // retryCount 0: viem would retry a 429 within milliseconds; our loops are the retry.
-  const hooks = { fetchFn: gatedFetch(gate), retryCount: 0 };
+  const hooks = { fetchFn: gatedFetch(gate, meteredFetch(meter)), retryCount: 0 };
   const reader = deps.reader ?? makeReader(env, hooks);
   const wallet = deps.wallet ?? makeWallet(env.WORKER_PRIVATE_KEY as Hex, env, hooks);
   const chain = new ChainWriter(reader, wallet);
@@ -135,6 +137,7 @@ export async function startWorker(env: Env, log: Logger, deps: WorkerDeps = {}):
       triggerCreators: env.TRIGGER_CREATORS.length > 0 ? env.TRIGGER_CREATORS : "any",
       maxReceiptsPerTriggerPerHour: env.MAX_RECEIPTS_PER_TRIGGER_PER_HOUR,
       stats: engine.stats,
+      rpc: meter.snapshot(),
     });
   });
   const server = await new Promise<Server>((resolve) => {
@@ -201,6 +204,9 @@ export async function startWorker(env: Env, log: Logger, deps: WorkerDeps = {}):
         });
     }, HEARTBEAT_MS),
   );
+
+  // Calls/min and response bytes by method and query shape (arkiv/friction.md F20).
+  timers.push(setInterval(() => log.info({ rpc: meter.snapshot() }, "rpc usage"), METER_LOG_MS));
 
   if (env.SKIP_SEALED) {
     log.warn("SKIP_SEALED=true: DEMO SWITCH ON. Sealed jobs are accepted but will never fire.");

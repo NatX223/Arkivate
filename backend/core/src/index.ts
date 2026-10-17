@@ -5,6 +5,7 @@ export * from "./spec.js";
 export * from "./commit.js";
 export * from "./reader.js";
 export * from "./ratelimit.js";
+export * from "./meter.js";
 export * from "./query.js";
 export * from "./entities.js";
 export * from "./conditions.js";
