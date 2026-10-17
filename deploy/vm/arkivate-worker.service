@@ -1,0 +1,28 @@
+# Arkivate worker on a plain VM. Installed by deploy/vm/setup.sh to
+# /etc/systemd/system/arkivate-worker.service. Config comes from /opt/arkivate/.env (chmod 600).
+[Unit]
+Description=Arkivate worker
+Documentation=https://github.com/NatX223/Arkivate/blob/main/docs/deploy-vm.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=arkivate
+Group=arkivate
+WorkingDirectory=/opt/arkivate
+Environment=NODE_ENV=production
+# Real env vars win over .env, so the job store is always here (setup.sh creates it).
+Environment=DATA_DIR=/var/lib/arkivate
+# Binds 127.0.0.1:8787 (production default); Caddy terminates HTTPS in front of it.
+ExecStart=/usr/bin/node /opt/arkivate/backend/worker/node_modules/tsx/dist/cli.mjs /opt/arkivate/backend/worker/src/index.ts
+Restart=always
+RestartSec=5
+# Hardening: the worker only writes its job store (DATA_DIR=/var/lib/arkivate).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

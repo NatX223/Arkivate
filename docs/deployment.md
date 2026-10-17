@@ -7,118 +7,129 @@ other host that runs Node 22; see [Add your own worker](#add-your-own-worker).
 | What | Where | Status |
 |---|---|---|
 | Web app (`frontend/`) | Vercel | TODO: live URL |
-| worker-1 | Google Cloud Run, region TODO | TODO: `https://…/health` |
-| worker-2 | Google Cloud Run, a different region TODO | TODO: `https://…/health` |
+| worker-1 | GCP e2-micro VM, `us-central1` | TODO: `https://<ip-with-dashes>.sslip.io/health` |
+| worker-2 | GCP e2-micro VM, `us-east1` | TODO: `https://<ip-with-dashes>.sslip.io/health` |
 
-Each worker has its own wallet (see [`WALLETS.md`](../WALLETS.md)), its own job store and its own
+Each worker has its own VM, region, wallet (see [`WALLETS.md`](../WALLETS.md)), job store and
 secrets. They share nothing but Arkiv.
+
+## Order
+
+1. **Workers** ([deploy-vm.md](deploy-vm.md)), with `CORS_ORIGINS=http://localhost:3000` for now.
+   Each one registers its `PUBLIC_ENDPOINT` on Arkiv, which is how the web app finds it.
+2. **Frontend** on Vercel (below). Note its production URL.
+3. **`CORS_ORIGINS`**: on each VM, add the Vercel origin to `/opt/arkivate/.env`.
+4. **Restart** each worker (`sudo systemctl restart arkivate-worker`), then check the web app's
+   Workers page shows both online.
 
 ## Web app (Vercel)
 
 1. Import the GitHub repo in Vercel. **Root Directory:** `frontend`. Framework: Next.js (detected).
-   The build uses webpack, not Turbopack (`arkiv/friction.md` F18); `next.config.ts` already sets it up.
-2. Environment variables:
+   Leave install and build commands at their defaults: Vercel finds the root `pnpm-lock.yaml`,
+   installs the pnpm workspace (so `@arkivate/core` resolves), and runs `next build`, which in
+   Next 15 uses webpack (`arkiv/friction.md` F18; `next.config.ts` maps core's `.js` imports to
+   `.ts`). No `vercel.json` is needed. Keep "Include files outside the Root Directory" enabled (the
+   default): the build reads `backend/core`.
+2. Environment variables. These are the only ones the frontend reads, both server-side in the
+   `/api/rpc` read proxy. It reads no `NEXT_PUBLIC_*` variables.
 
    | Variable | Required? | Purpose |
    |---|---|---|
-   | `ARKIV_ACCESS_KEY` | Recommended | Server-only. The `/api/rpc` read proxy adds it as `X-API-KEY`; without it, reads share the keyless limit (~100 queries/hour/IP). Never exposed to the browser. |
+   | `ARKIV_ACCESS_KEY` | Recommended | Server-only. The proxy adds it as `X-API-KEY`; without it, reads share the keyless limit (~100 queries/hour/IP). Never exposed to the browser: do **not** prefix it with `NEXT_PUBLIC_`. |
    | `ARKIV_RPC_HTTP` | No | Defaults to the Tiramisu RPC. |
 
 3. Deploy. The site holds no private keys: visitors sign writes in their own wallet (MetaMask), and
-   the proxy forwards only read methods.
+   the proxy forwards only read methods. Workers are discovered from their `worker` entities on
+   Arkiv, so no worker URL is configured in Vercel.
 
-## Workers (Google Cloud Run)
+## Workers (GCP e2-micro VMs)
 
-No local Docker: Cloud Build builds the image from `backend/worker/Dockerfile`, with the repo root as
-the build context.
+Each reference worker is a Debian 12 e2-micro VM running the worker as plain Node 22 under systemd
+(`arkivate-worker.service`), with Caddy in front serving HTTPS for `<ip-with-dashes>.sslip.io`
+(certificate obtained automatically). No Docker and no build step: the worker runs its TypeScript
+with `tsx` from a clone in `/opt/arkivate`.
 
-One-time setup (replace `PROJECT_ID` and `REGION`):
+The step-by-step console guide is **[deploy-vm.md](deploy-vm.md)**. The files it uses live in
+[`deploy/vm/`](../deploy/vm/):
 
-```bash
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com
-gcloud artifacts repositories create arkivate --repository-format=docker --location=REGION
-```
-
-Build once; every worker runs the same image:
-
-```bash
-gcloud builds submit --config cloudbuild.yaml \
-  --substitutions _IMAGE=REGION-docker.pkg.dev/PROJECT_ID/arkivate/worker:latest .
-```
-
-Per worker (shown for worker-1; repeat with `worker-2`, its own key, bucket and a different region):
-
-```bash
-# secrets: the worker's own key, and the shared Arkiv access key
-printf '%s' "$WORKER_1_KEY" | gcloud secrets create worker-1-key --data-file=-
-printf '%s' "$ARKIV_ACCESS_KEY" | gcloud secrets create arkiv-access-key --data-file=-   # once
-
-# persistent job store (fired epochs, expiry index, pinned deadlines, sealed jobs)
-gcloud storage buckets create gs://PROJECT_ID-arkivate-worker-1 --location=REGION
-
-gcloud run deploy arkivate-worker-1 \
-  --image REGION-docker.pkg.dev/PROJECT_ID/arkivate/worker:latest \
-  --region REGION \
-  --min-instances=1 --max-instances=1 --no-cpu-throttling \
-  --allow-unauthenticated \
-  --add-volume name=data,type=cloud-storage,bucket=PROJECT_ID-arkivate-worker-1 \
-  --add-volume-mount volume=data,mount-path=/app/backend/worker/data \
-  --set-env-vars WORKER_NAME=worker-1,TRIGGER_CREATORS=TODO,CORS_ORIGINS=TODO \
-  --set-secrets WORKER_PRIVATE_KEY=worker-1-key:latest,ARKIV_ACCESS_KEY=arkiv-access-key:latest
-```
-
-Then set `PUBLIC_ENDPOINT` to the service URL Cloud Run printed, and redeploy so the worker
-re-registers with it:
-
-```bash
-gcloud run services update arkivate-worker-1 --region REGION \
-  --update-env-vars PUBLIC_ENDPOINT=https://arkivate-worker-1-….run.app
-```
-
-On start the worker validates its config, checks the chain ID, and patches its existing `worker`
-entity with the new endpoint (it finds it by `$creator`, so a redeploy never creates a second
-registration). `GET /health` should then report `"mode": "live"`.
-
-Why each flag:
-
-| Flag | Reason |
+| File | What it does |
 |---|---|
-| `--min-instances=1` | A worker must never scale to zero: it holds a WebSocket subscription and pollers. |
-| `--no-cpu-throttling` | CPU stays on between HTTP requests, so the 10 s expiry sweep and 30 s pollers keep running. |
-| `--max-instances=1` | One container per wallet. Two containers with one key would race on nonces (`predictEntityKeys` is nonce-derived) and could double-fire. |
-| GCS volume | The job store survives restarts: expiries that happen while the worker is down are still caught, and pinned deadlines never move. |
-| `--allow-unauthenticated` | `POST /sealed` (the hand-off) and `GET /health` must be publicly reachable. The hand-off authenticates by signature, not by IAM. |
-| `--set-secrets` | Private keys live in Secret Manager, never in plain env flags or the image. |
+| `setup.sh <hostname> <env-file>` | Idempotent provisioning of a fresh VM: packages, swap, `arkivate` user, clone, install, `.env`, service, Caddy, then prints `/health`. |
+| `update.sh` | `git pull --ff-only`, filtered install, restart, print `/health`. |
+| `arkivate-worker.service` | systemd unit: `User=arkivate`, `NODE_ENV=production`, `DATA_DIR=/var/lib/arkivate`, `Restart=always`. |
+| `Caddyfile.template` | `{{HOST}} { reverse_proxy 127.0.0.1:8787 }`. |
+| `worker.env.example` | Every worker variable, commented. |
+
+Why this shape:
+
+| Choice | Reason |
+|---|---|
+| Always-on VM | A worker holds a WebSocket subscription, a 10 s expiry sweep and 30 s pollers; it must never scale to zero. |
+| One VM per wallet | Two processes with one key would race on nonces (`predictEntityKeys` is nonce-derived) and could double-fire. |
+| Two regions | The censorship-resistance story needs workers that fail independently. |
+| Job store on local disk (`/var/lib/arkivate`) | Survives restarts: expiries that happen while the worker is down are still caught, and pinned deadlines never move. |
+| Worker binds `127.0.0.1`, Caddy on 80/443 | Only HTTPS is exposed. The web app is served over HTTPS, so browsers need HTTPS workers for `/health` and `POST /sealed`. |
+| CORS in the worker, not Caddy | One exact-match allowlist (`CORS_ORIGINS`), tested in `backend/worker/src/http.test.ts`. |
+| `sslip.io` | A real hostname (needed for a certificate) without buying or configuring DNS. |
+| `.env` mode 600, owned by `arkivate` | The private key lives only on the VM, never in the repo or the image. |
+
+`backend/worker/Dockerfile` and `cloudbuild.yaml` remain as an optional path for container hosts.
+The reference deployment doesn't use them.
 
 ### Worker environment
 
 | Variable | Required? | Default | Purpose |
 |---|---|---|---|
-| `WORKER_PRIVATE_KEY` | **Yes** | | The worker's own wallet. `0x` + 64 hex. Must hold testnet GLM, or the worker stays in read-only dry-run mode. |
+| `WORKER_PRIVATE_KEY` | **Yes** | | The worker's own wallet: 64 hex chars, `0x` optional. Must hold testnet GLM, or the worker stays in read-only dry-run mode. |
 | `WORKER_NAME` | Recommended | `worker-local` | Name in the `worker` entity, and the job-store file name. |
 | `ARKIV_ACCESS_KEY` | Recommended | | Sent as `X-API-KEY`. A worker polls constantly; the keyless limit is ~100 queries/hour/IP. |
-| `PUBLIC_ENDPOINT` | For sealed jobs | | Public URL published in the `worker` entity so owners can hand off sealed jobs. |
-| `PORT` / `WORKER_PORT` | No | `8787` | Cloud Run sets `PORT`, which wins. |
-| `DATA_DIR` | No | `backend/worker/data` | Job store location. The Dockerfile sets `/app/backend/worker/data`. |
-| `ARKIV_RPC_HTTP` / `ARKIV_RPC_WS` | No | Tiramisu | RPC endpoints. |
-| `TRIGGER_CREATORS` | No | empty = any | Comma-separated addresses whose **public** triggers this worker runs (gas guard). |
+| `PUBLIC_ENDPOINT` | For sealed jobs | | Public URL published in the `worker` entity (on the VMs: `https://<hostname>`). |
+| `CORS_ORIGINS` | For the web app | `http://localhost:3000` | Exact browser origins (comma-separated, no `*`) allowed on `GET /health` and `POST /sealed`. Denied preflights get 403. |
+| `TRIGGER_CREATORS` | No | empty = any | Comma-separated addresses whose **public triggers and sealed hand-offs** this worker accepts (gas guard). Other sealed hand-offs get 403. |
 | `MAX_RECEIPTS_PER_TRIGGER_PER_HOUR` | No | `12` | Gas guard: receipts per trigger per hour from this worker. |
-| `CORS_ORIGINS` | No | `*` | Browser origins allowed to `POST /sealed` (set it to the web app's origin). |
 | `TELEGRAM_BOT_TOKEN` | For Telegram delivery | | Bot used to deliver sealed alerts. Without it, Telegram jobs fail delivery and write no receipt. |
+| `PORT` / `WORKER_PORT` | No | `8787` | Listen port; `PORT` wins if set. The Caddyfile proxies to 8787. |
+| `HOST` | No | `127.0.0.1` if `NODE_ENV=production`, else `0.0.0.0` | Bind address. |
+| `DATA_DIR` | No | `backend/worker/data` | Job store, absolute or relative path. The systemd unit sets `/var/lib/arkivate`. |
+| `GIT_SHA` | No | | `/health` `version` when `git rev-parse` fails (e.g. no `.git`). |
+| `ARKIV_RPC_HTTP` / `ARKIV_RPC_WS` | No | Tiramisu | RPC endpoints. |
 | `SKIP_SEALED` | No | `false` | **Demo switch only.** Accepts sealed jobs but never fires them, to stage a provable skip. Never enable on a worker people should trust. |
+
+Blank values count as unset, so a copied template with empty lines falls back to the defaults.
+`GET /health` reports `version` (short commit) and `uptimeSeconds` alongside the worker's status.
 
 ### Gas guards on the reference workers
 
 Every receipt costs the worker gas (measured ~0.00014 GLM each at 1 gwei), and anyone can post a
-public trigger. The reference workers therefore run with `TRIGGER_CREATORS` set (TODO: final list),
-so they only run public triggers from listed creators. Two consequences, stated plainly:
+public trigger. The reference workers therefore run with `TRIGGER_CREATORS` set (TODO: final list).
+Consequences, stated plainly:
 
 - A public trigger created by someone else will not fire on the reference workers. It will fire on
   any worker that accepts all creators, including one you run yourself.
-- `TRIGGER_CREATORS` does not apply to sealed hand-offs today; the per-trigger hourly cap does.
+- A sealed hand-off from an unlisted creator is refused with 403 before anything is written.
+- The per-trigger hourly receipt cap applies on top, to listed creators too.
 
 Owner-funded triggers (the owner pays for its own receipts) are on the roadmap and would remove the
 need for an allowlist.
+
+## Cost
+
+| Item | Estimate |
+|---|---|
+| 2 × e2-micro (us-central1, us-east1) | The GCP free tier covers one e2-micro-month in these regions per billing account, so roughly one VM is billed: about $7/month list price. |
+| 2 × external IPv4 | About $3–4/month each while in use. |
+| Disks, egress | Within the free tier for 10–30 GB standard disks and this traffic. |
+| Vercel | Hobby plan, free. |
+
+For the hackathon window (until 23 Oct) that is a few dollars in total. Check the estimate the VM
+create form shows; prices vary by region and account.
+
+## Teardown (after 23 Oct 2026)
+
+Delete both VMs, then release both static IPs (an unattached reserved IP is still billed). Steps:
+[deploy-vm.md § Teardown](deploy-vm.md#teardown-after-23-oct-2026). The workers' `worker`
+entities expire on Arkiv within a day once heartbeats stop; receipts and acceptances expire on
+their own TTLs. The Vercel project can stay or be deleted.
 
 ## Add your own worker
 
@@ -136,8 +147,10 @@ pnpm worker
 
 The worker registers a `worker` entity signed by its wallet, extends it every 6 hours, and drops out
 of the network when it stops (the entity expires after 1 day). It ranks itself among live workers by
-address for dedupe (see the README). To accept sealed hand-offs, give it a public URL and set
-`PUBLIC_ENDPOINT`. On Cloud Run, reuse the commands above with your own project.
+address for dedupe (see the README). To accept sealed hand-offs, give it a public HTTPS URL, set
+`PUBLIC_ENDPOINT`, and add the web app's origin to `CORS_ORIGINS`. On a Debian VM,
+`deploy/vm/setup.sh` does all of it ([deploy-vm.md](deploy-vm.md)); fork the repo first if you want
+it to clone your copy.
 
 The worker package is not published to npm yet, so there is no `npx` one-liner; it runs from a
 clone with `pnpm worker` (TypeScript via `tsx`, no build step).
@@ -145,10 +158,11 @@ clone with `pnpm worker` (TypeScript via `tsx`, no build step).
 ## Smoke test after deploying
 
 1. `curl https://<worker>/health` on each worker: `ok: true`, `mode: "live"`, the expected
-   `address`, `triggers > 0`.
-2. The web app's Workers page lists both workers with their health.
+   `address`, the deployed `version`, `triggers > 0`.
+2. The web app's Workers page lists both workers with their health (needs `CORS_ORIGINS`).
 3. `pnpm cli demo-feed --kind listing --blocks 120` and watch a keep-alive trigger extend it
    (receipt with `outcome = extended` on the trigger page).
 4. Sealed path: `pnpm cli seal --spec backend/cli/examples/sealed-event-webhook.json --worker worker-1 --webhook <your test URL>`,
    then `pnpm cli demo-feed --kind event --ttl 1440`, then `pnpm cli verify <sealed-key>` after a
-   `reveal`. Use a long `--ttl` so the evidence outlives judging (see `docs/verification.md`).
+   `reveal`. Use a long `--ttl` so the evidence outlives judging (see `docs/verification.md`). The
+   sealed owner's address must be in the worker's `TRIGGER_CREATORS`.

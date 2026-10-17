@@ -1,7 +1,7 @@
 # Wallets
 
 Public addresses that create Arkivate entities on Tiramisu (chain ID 7738577). Public addresses
-only: keys live in `.env` locally and in Secret Manager for deployed workers, never in this repo.
+only: keys live in `.env` locally and in `/opt/arkivate/.env` (mode 600) on each worker VM, never in this repo.
 Generate a fresh set with `pnpm wallets` (prints keys and addresses, writes nothing).
 
 | Role | Address | Creates | Explorer |

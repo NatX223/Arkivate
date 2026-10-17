@@ -1,0 +1,5 @@
+# Rendered by setup.sh: {{HOST}} becomes e.g. 34-123-45-67.sslip.io. Caddy gets the TLS
+# certificate automatically. CORS is handled by the worker (CORS_ORIGINS), not here.
+{{HOST}} {
+	reverse_proxy 127.0.0.1:8787
+}

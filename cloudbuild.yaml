@@ -1,3 +1,4 @@
+# OPTIONAL, unused by the reference deployment (workers run on VMs: docs/deploy-vm.md).
 # Builds the worker image remotely (no local Docker). The Dockerfile lives in backend/worker,
 # so the build context is the repo root. Usage:
 #   gcloud builds submit --config cloudbuild.yaml --substitutions _IMAGE=REGION-docker.pkg.dev/PROJECT_ID/arkivate/worker:latest .

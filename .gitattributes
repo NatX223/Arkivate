@@ -1,0 +1,2 @@
+# Deploy files run on Linux; keep LF even in Windows checkouts.
+deploy/vm/** text eol=lf

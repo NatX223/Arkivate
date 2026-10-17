@@ -62,7 +62,8 @@ arkivate/
 ├─ package.json                  # root scripts + dev tools
 ├─ pnpm-workspace.yaml           # backend/*, frontend
 ├─ tsconfig.base.json · tsconfig.json (project references)
-├─ cloudbuild.yaml               # remote build of the worker image
+├─ cloudbuild.yaml               # optional: remote build of the worker image (unused)
+├─ deploy/vm/                    # worker VM: setup.sh, update.sh, systemd unit, Caddyfile
 ├─ docs/                         # prose only: technical-plan.md, structure.md
 ├─ arkiv/                        # judge-required: schema.md, friction.md (see §7)
 ├─ backend/
@@ -77,7 +78,7 @@ arkivate/
 │  │     ├─ spec.ts              # TriggerSpec zod schema
 │  │     └─ commit.ts            # canonical hash commitment
 │  ├─ worker/                    # @arkivate/worker (bin: arkivate-worker), deployed ×2
-│  │  ├─ Dockerfile
+│  │  ├─ Dockerfile           # optional; reference workers run on VMs (deploy/vm/)
 │  │  ├─ src/index.ts            # GET /health on PORT ?? WORKER_PORT
 │  │  └─ data/                   # gitignored job store (DATA_DIR)
 │  ├─ cli/                       # @arkivate/cli (bin: arkivate), local only
@@ -145,8 +146,8 @@ TELEGRAM_BOT_TOKEN=
 ```
 
 Each worker deployment has exactly one identity (`WORKER_NAME` + `WORKER_PRIVATE_KEY`); worker A
-and worker B are the same image with different values. On Cloud Run, `PORT` overrides
-`WORKER_PORT`.
+and worker B are the same code with different values (one GCP e2-micro VM each; see
+`docs/deploy-vm.md`). If `PORT` is set, it overrides `WORKER_PORT`.
 
 `backend/core/src/config.ts`: load with `dotenv`, validate with zod. Private keys must match
 `^0x[0-9a-fA-F]{64}$`. Fail fast with a clear message naming the missing variable (never print

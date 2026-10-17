@@ -42,10 +42,11 @@ others with a plain transfer.
 | `WORKER_NAME` | worker | Recommended (default `worker-local`) |
 | `WORKER_PORT` | worker | No (default `8787`) |
 | `PUBLIC_ENDPOINT` | worker | For sealed hand-offs (locally: `http://localhost:8787`) |
-| `DATA_DIR` | worker | No (default `backend/worker/data`, gitignored) |
-| `TRIGGER_CREATORS` | worker | No (empty = run triggers from any creator) |
+| `DATA_DIR` | worker | No (default `backend/worker/data`, gitignored; absolute paths work) |
+| `HOST` | worker | No (default `0.0.0.0`; `127.0.0.1` when `NODE_ENV=production`) |
+| `TRIGGER_CREATORS` | worker | No (empty = accept public triggers and sealed hand-offs from any creator) |
 | `MAX_RECEIPTS_PER_TRIGGER_PER_HOUR` | worker | No (default `12`) |
-| `CORS_ORIGINS` | worker | No (default `*`) |
+| `CORS_ORIGINS` | worker | No (default `http://localhost:3000`; exact origins, comma-separated, no `*`) |
 | `TELEGRAM_BOT_TOKEN` | worker | For Telegram delivery |
 | `SKIP_SEALED` | worker | No. Demo switch only: accepts sealed jobs and never fires them |
 

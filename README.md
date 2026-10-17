@@ -8,8 +8,8 @@ receipt for every reaction, so a skipped job can be proven.
 | **Network** | Arkiv Tiramisu testnet, chain ID `7738577` |
 | **Tracks** | Open Source · Censorship Resistance · Privacy |
 | **Live app** | TODO: Vercel URL |
-| **worker-1 `/health`** | TODO: Cloud Run URL |
-| **worker-2 `/health`** | TODO: Cloud Run URL |
+| **worker-1 `/health`** | TODO: `https://<ip-with-dashes>.sslip.io/health` (us-central1) |
+| **worker-2 `/health`** | TODO: `https://<ip-with-dashes>.sslip.io/health` (us-east1) |
 | **Demo video** | TODO: link |
 | **License** | [MIT](LICENSE) |
 
@@ -210,7 +210,7 @@ What it needs:
   triggers from addresses you choose (a gas guard), `TELEGRAM_BOT_TOKEN` for Telegram delivery.
 
 The worker isn't published to npm yet, so there is no `npx` one-liner; it runs from a clone. Hosting
-on Cloud Run is in [`docs/deployment.md`](docs/deployment.md).
+on a small VM is in [`docs/deployment.md`](docs/deployment.md) and [`docs/deploy-vm.md`](docs/deploy-vm.md).
 
 ## Conditions and actions
 
@@ -453,8 +453,9 @@ curl -s https://rpc.tiramisu.db-chain.testnet.arkiv.network -H 'content-type: ap
   ([F19](arkiv/friction.md#f19--historical-reads-work-but-their-retention-is-undocumented-so-dispute-evidence-has-no-known-shelf-life)).
   `atBlock` reads still worked 13,300 blocks back, so the fix is to replay at the reveal's block.
 - **The reference workers are allowlisted.** They run with `TRIGGER_CREATORS` set so strangers can't
-  drain their gas with spam triggers. Open use needs owner-funded triggers (roadmap) or your own
-  worker. The allowlist doesn't cover sealed hand-offs yet; the per-trigger hourly receipt cap does.
+  drain their gas with spam triggers. The allowlist covers sealed hand-offs too (an unlisted
+  creator gets 403), and the per-trigger hourly receipt cap applies on top. Open use needs
+  owner-funded triggers (roadmap) or your own worker.
 - **Dedupe is timing-based.** Arkiv has no conditional create
   ([F7](arkiv/friction.md#f7--no-atomic-create-if-absent-so-multi-worker-dedupe-is-timing-based-and-we-shipped-duplicate-receipts-once)),
   so a primary that stalls past its slot causes a duplicate receipt. We shipped one with a 2 s slot
@@ -583,15 +584,17 @@ There are no automated tests for the worker loop or the web app.
 
 ## Deployment
 
-The web app runs on Vercel; the reference workers worker-1 and worker-2 run on Google Cloud Run in
-different regions (TODO: regions), each with its own wallet, secret and storage bucket. Any operator
-can add more workers the same way, or on any host with Node 22.
+The web app runs on Vercel; the reference workers worker-1 and worker-2 run on GCP e2-micro VMs in
+different regions (us-central1 and us-east1), each with its own wallet and job store. Each VM runs
+the worker as plain Node 22 under systemd, behind Caddy serving HTTPS on an `sslip.io` hostname
+(`deploy/vm/`). Any operator can add more workers the same way, or on any host with Node 22.
 
 - Web app: TODO: live URL
 - worker-1: TODO: `https://…/health`
 - worker-2: TODO: `https://…/health`
 
-Commands, flags and env tables: [`docs/deployment.md`](docs/deployment.md).
+Overview, order, cost and env tables: [`docs/deployment.md`](docs/deployment.md). Console
+walkthrough: [`docs/deploy-vm.md`](docs/deploy-vm.md).
 
 ## Run it locally
 
@@ -612,7 +615,8 @@ pnpm web                                 # http://localhost:3000
 | `ARKIV_ACCESS_KEY` | Recommended | Optional | Recommended (server-only) |
 | `PUBLIC_ENDPOINT` | For sealed hand-offs | | |
 | `TELEGRAM_BOT_TOKEN` | For Telegram delivery | | |
-| `TRIGGER_CREATORS`, `MAX_RECEIPTS_PER_TRIGGER_PER_HOUR`, `CORS_ORIGINS`, `DATA_DIR`, `WORKER_PORT` | Optional | | |
+| `CORS_ORIGINS` | For the web app (default `http://localhost:3000`) | | |
+| `TRIGGER_CREATORS`, `MAX_RECEIPTS_PER_TRIGGER_PER_HOUR`, `DATA_DIR`, `WORKER_PORT`, `HOST` | Optional | | |
 | `SKIP_SEALED` | Demo switch only | | |
 | `OWNER_PRIVATE_KEY` | | For `create`, `pause`, `demo-feed` | |
 | `SEALED_OWNER_PRIVATE_KEY` | | For `seal`, `handoff`, `reveal` | |
