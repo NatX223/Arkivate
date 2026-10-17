@@ -1,4 +1,3 @@
-import { NoEntityFoundError } from "@arkiv-network/sdk";
 import { key as keyValue } from "@arkiv-network/sdk/attr";
 import { eq, or } from "@arkiv-network/sdk/query";
 import type { Hex } from "viem";
@@ -22,20 +21,52 @@ export interface LiveEntity {
   permissionlessExtension: boolean;
 }
 
-/** One entity by key, or `undefined` if no live entity has it (deleted, expired or never existed). */
+/**
+ * One entity by key, or `undefined` if no live entity has it (deleted, expired or never existed).
+ * A projected query, not `getEntity`: that one always selects `*`, payload included, and this
+ * runs on every expiry sweep.
+ */
 export async function readLive(reader: Reader, entityKey: Hex): Promise<LiveEntity | undefined> {
-  try {
-    const e = await reader.getEntity(entityKey);
-    return {
-      key: e.key,
-      owner: e.owner,
-      expiresAt: e.expiresAt,
-      permissionlessExtension: e.creationFlags.permissionlessExtension,
-    };
-  } catch (err) {
-    if (err instanceof NoEntityFoundError) return undefined;
-    throw err;
+  const page = await reader
+    .select({ key: true, owner: true, expiresAt: true, creationFlags: true })
+    .where(eq("$key", keyValue(entityKey)))
+    .limit(1)
+    .fetch();
+  const e = page.entities[0];
+  if (!e) return undefined;
+  return {
+    key: e.key,
+    owner: e.owner,
+    expiresAt: e.expiresAt,
+    permissionlessExtension: e.creationFlags.permissionlessExtension,
+  };
+}
+
+/**
+ * Many entities by key in one query per 50 keys (each `arkiv_query` costs the same 100 units
+ * whether it returns one entity or fifty). Keys missing from the result are not live.
+ */
+export async function readLiveMany(reader: Reader, keys: Iterable<Hex>, atBlock?: bigint): Promise<Map<Hex, LiveEntity>> {
+  const out = new Map<Hex, LiveEntity>();
+  const all = [...new Set([...keys].map((k) => k.toLowerCase() as Hex))];
+  for (let i = 0; i < all.length; i += 50) {
+    const chunk = all.slice(i, i + 50);
+    let q = reader
+      .select({ key: true, owner: true, expiresAt: true, creationFlags: true })
+      .where(or(chunk.map((k) => eq("$key", keyValue(k)))))
+      .limit(50);
+    if (atBlock !== undefined) q = q.atBlock(atBlock);
+    const page = await q.fetch();
+    for (const e of page.entities) {
+      out.set(e.key.toLowerCase() as Hex, {
+        key: e.key,
+        owner: e.owner,
+        expiresAt: e.expiresAt,
+        permissionlessExtension: e.creationFlags.permissionlessExtension,
+      });
+    }
   }
+  return out;
 }
 
 export interface WatchedSnapshot {
@@ -43,10 +74,19 @@ export interface WatchedSnapshot {
   expiresAt: bigint;
 }
 
-/** Every live entity a watch covers, read at one pinned block so pages are consistent. */
-export async function snapshotWatch(reader: Reader, watch: Watch, atBlock: bigint): Promise<WatchedSnapshot[]> {
+/**
+ * Every live entity a watch covers, read at one pinned block so pages are consistent. Pass
+ * `known` (from one `readLiveMany` over every entity-key watch) to skip the per-key read.
+ */
+export async function snapshotWatch(
+  reader: Reader,
+  watch: Watch,
+  atBlock: bigint,
+  known?: Map<Hex, LiveEntity>,
+): Promise<WatchedSnapshot[]> {
   if ("entity_key" in watch) {
-    const e = await readLive(reader, watch.entity_key as Hex);
+    const k = watch.entity_key.toLowerCase() as Hex;
+    const e = known ? known.get(k) : await readLive(reader, k);
     return e ? [{ key: e.key, expiresAt: e.expiresAt }] : [];
   }
   const out: WatchedSnapshot[] = [];

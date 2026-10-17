@@ -50,3 +50,55 @@ export function compare(actual: number, op: ComparisonOp, value: number): boolea
       return actual <= value;
   }
 }
+
+/** An entity row as the SDK decodes it: typed attribute values and its creator. */
+export interface CandidateRow {
+  key: Hex;
+  creator: Hex;
+  createdAt: bigint;
+  expiresAt: bigint;
+  attributes: Record<string, { type: string; value: unknown } | undefined>;
+}
+
+/**
+ * Evaluate a filter locally against an already-fetched row, so one query for a batch of new
+ * entities can serve every trigger (each `arkiv_query` costs 100 units). Conservative: returns
+ * `undefined` whenever the node's semantics aren't certain (string ordering, ordered compares on
+ * addresses and keys), and the caller asks the node instead.
+ */
+export function localMatch(row: CandidateRow, f: QueryFilter): boolean | undefined {
+  if (f.created_by && row.creator.toLowerCase() !== f.created_by.toLowerCase()) return false;
+  let unsure = false;
+  for (const [op, name, lit] of f.where) {
+    const a = row.attributes[name];
+    const want = Object.keys(lit)[0] as keyof TypedLiteral;
+    // Typed compare: a value of another type never matches (the node's bare-number trap).
+    if (!a || a.type !== want) return false;
+    const v = (lit as Record<string, unknown>)[want];
+    let ok: boolean | undefined;
+    if (op === "starts_with") ok = typeof a.value === "string" && a.value.startsWith(String(v));
+    else if (want === "u64") ok = compareBig(BigInt(a.value as bigint), op, BigInt(v as string));
+    else if (want === "i32") ok = compareBig(BigInt(a.value as number), op, BigInt(v as number));
+    else if (op !== "eq") ok = undefined;
+    else if (want === "addr" || want === "key") ok = String(a.value).toLowerCase() === String(v).toLowerCase();
+    else ok = a.value === v;
+    if (ok === false) return false;
+    if (ok === undefined) unsure = true;
+  }
+  return unsure ? undefined : true;
+}
+
+function compareBig(actual: bigint, op: ComparisonOp, value: bigint): boolean {
+  switch (op) {
+    case "eq":
+      return actual === value;
+    case "gt":
+      return actual > value;
+    case "gte":
+      return actual >= value;
+    case "lt":
+      return actual < value;
+    case "lte":
+      return actual <= value;
+  }
+}

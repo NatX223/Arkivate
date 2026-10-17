@@ -87,6 +87,10 @@ The reference deployment doesn't use them.
 | `CORS_ORIGINS` | For the web app | `http://localhost:3000` | Exact browser origins (comma-separated, no `*`) allowed on `GET /health` and `POST /sealed`. Denied preflights get 403. |
 | `TRIGGER_CREATORS` | No | empty = any | Optional gas guard: comma-separated addresses whose **public triggers and sealed hand-offs** this worker accepts. When set, other sealed hand-offs get 403. Empty on the reference workers. |
 | `MAX_RECEIPTS_PER_TRIGGER_PER_HOUR` | No | `12` | Gas guard: receipts per trigger per hour from this worker. |
+| `SWEEP_SECONDS` | No | `30` | Read budget: how often the expiry index is compared with the head. It only queries Arkiv for entities past a deadline. |
+| `POLL_SECONDS` | No | `30` | Read budget: silence/count pollers. Silence checks are also scheduled from the newest heartbeat, so most ticks cost nothing. |
+| `REFRESH_SECONDS` | No | `600` | Read budget: full reload of triggers, workers and the expiry index (WebSocket events cover the time in between). |
+| `FLUSH_SECONDS` | No | `5` | Read budget: batch window for WebSocket `EntityCreated` keys (one query per batch, for all triggers). |
 | `TELEGRAM_BOT_TOKEN` | For Telegram delivery | | Bot used to deliver sealed alerts. Without it, Telegram jobs fail delivery and write no receipt. |
 | `PORT` / `WORKER_PORT` | No | `8787` | Listen port; `PORT` wins if set. The Caddyfile proxies to 8787. |
 | `HOST` | No | `127.0.0.1` if `NODE_ENV=production`, else `0.0.0.0` | Bind address. |

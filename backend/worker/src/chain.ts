@@ -44,7 +44,7 @@ export class ChainWriter {
   register(payload: WorkerPayload, modes: readonly string[]) {
     return this.serial(async () => {
       const page = await this.reader
-        .select({ key: true, payload: true })
+        .select({ key: true })
         .where(eq("project", str(PROJECT)), eq("entity_type", str(ENTITY_TYPES.worker)))
         .createdBy(this.address)
         .limit(1)

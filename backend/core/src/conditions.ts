@@ -1,7 +1,7 @@
 import { key as keyValue } from "@arkiv-network/sdk/attr";
 import { eq, or, render, type Expression } from "@arkiv-network/sdk/query";
 import type { Hex } from "viem";
-import { compare, conditionExpression } from "./query.js";
+import { compare, conditionExpression, localMatch, type CandidateRow, type QueryFilter } from "./query.js";
 import type { Reader } from "./reader.js";
 import type { OnCount, OnCreate, OnSilence } from "./spec.js";
 import type { z } from "zod";
@@ -51,6 +51,57 @@ export async function matchCandidates(
 }
 
 /**
+ * The rows for a batch of freshly created keys, in one query per 50 keys, with everything
+ * `localMatch` needs. One fetch serves every on_create trigger and query watch.
+ */
+export async function fetchCandidates(reader: Reader, candidates: readonly Hex[]): Promise<CandidateRow[]> {
+  const out: CandidateRow[] = [];
+  for (let i = 0; i < candidates.length; i += CANDIDATE_CHUNK) {
+    const chunk = candidates.slice(i, i + CANDIDATE_CHUNK);
+    const page = await reader
+      .select({ key: true, creator: true, createdAt: true, expiresAt: true, attributes: true })
+      .where(or(chunk.map((k) => eq("$key", keyValue(k)))))
+      .limit(CANDIDATE_CHUNK)
+      .fetch();
+    for (const e of page.entities) {
+      out.push({
+        key: e.key,
+        creator: e.creator,
+        createdAt: e.createdAt,
+        expiresAt: e.expiresAt,
+        attributes: e.attributes as CandidateRow["attributes"],
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Which of these rows match `filter`? Decided locally where that's exact; for the rest, one
+ * query to the node (the old per-trigger path), so the answer is always the node's.
+ */
+export async function matchRows(reader: Reader, filter: QueryFilter, rows: readonly CandidateRow[]): Promise<CandidateRow[]> {
+  const yes: CandidateRow[] = [];
+  const unsure: CandidateRow[] = [];
+  for (const r of rows) {
+    const m = localMatch(r, filter);
+    if (m === true) yes.push(r);
+    else if (m === undefined) unsure.push(r);
+  }
+  for (let i = 0; i < unsure.length; i += CANDIDATE_CHUNK) {
+    const chunk = unsure.slice(i, i + CANDIDATE_CHUNK);
+    const page = await reader
+      .select({ key: true })
+      .where(conditionExpression(filter, [or(chunk.map((r) => eq("$key", keyValue(r.key))))]))
+      .limit(CANDIDATE_CHUNK)
+      .fetch();
+    const hit = new Set(page.entities.map((e) => e.key.toLowerCase()));
+    yes.push(...chunk.filter((r) => hit.has(r.key.toLowerCase())));
+  }
+  return yes;
+}
+
+/**
  * on_create, pull path (catch-up for dropped WS events): the newest matches created after
  * `sinceBlock`. Bounded to one page — anything older is assumed handled by earlier passes.
  */
@@ -89,7 +140,7 @@ export async function evalOnSilence(
   reader: Reader,
   cond: OnSilenceCond,
   head: bigint,
-): Promise<Firing | undefined> {
+): Promise<{ firing: Firing | undefined; dueAt: bigint }> {
   const page = await reader
     .select({ key: true, createdAt: true })
     .where(conditionExpression(cond))
@@ -100,15 +151,21 @@ export async function evalOnSilence(
   for (const e of page.entities) {
     if (!newest || e.createdAt > newest.createdAt) newest = { key: e.key, createdAt: e.createdAt };
   }
-  if (newest && head - newest.createdAt <= BigInt(cond.silence_blocks)) return undefined;
+  const silence = BigInt(cond.silence_blocks);
+  // The first block at which this could be silent, if nothing newer arrives.
+  const dueAt = newest ? newest.createdAt + silence + 1n : head;
+  if (newest && head - newest.createdAt <= silence) return { firing: undefined, dueAt };
   return {
-    // One firing per silence episode: the episode is identified by the last thing we heard.
-    epoch: `silence:${newest?.key ?? "none"}`,
-    evidenceBlock: head,
-    matchedKeys: newest ? [newest.key] : [],
-    summary: newest
-      ? `silent for ${head - newest.createdAt} blocks (> ${cond.silence_blocks}); last ${newest.key} at block ${newest.createdAt}`
-      : `no live matching entity from ${cond.created_by}`,
+    dueAt,
+    firing: {
+      // One firing per silence episode: the episode is identified by the last thing we heard.
+      epoch: `silence:${newest?.key ?? "none"}`,
+      evidenceBlock: head,
+      matchedKeys: newest ? [newest.key] : [],
+      summary: newest
+        ? `silent for ${head - newest.createdAt} blocks (> ${cond.silence_blocks}); last ${newest.key} at block ${newest.createdAt}`
+        : `no live matching entity from ${cond.created_by}`,
+    },
   };
 }
 

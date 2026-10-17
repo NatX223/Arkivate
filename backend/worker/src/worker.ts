@@ -69,6 +69,7 @@ export async function startWorker(env: Env, log: Logger, deps: WorkerDeps = {}):
       endpoint: env.PUBLIC_ENDPOINT ?? "(none)",
       triggerCreators: env.TRIGGER_CREATORS.length > 0 ? env.TRIGGER_CREATORS : "any",
       maxReceiptsPerTriggerPerHour: env.MAX_RECEIPTS_PER_TRIGGER_PER_HOUR,
+      intervalsSeconds: { sweep: env.SWEEP_SECONDS, poll: env.POLL_SECONDS, refresh: env.REFRESH_SECONDS, flush: env.FLUSH_SECONDS },
     },
     "config validated",
   );
@@ -100,6 +101,10 @@ export async function startWorker(env: Env, log: Logger, deps: WorkerDeps = {}):
     skipSealed: env.SKIP_SEALED,
     deliver: (d, a) => deliver(d, a, env.TELEGRAM_BOT_TOKEN),
     gate,
+    sweepMs: env.SWEEP_SECONDS * 1000,
+    pollMs: env.POLL_SECONDS * 1000,
+    refreshMs: env.REFRESH_SECONDS * 1000,
+    flushMs: env.FLUSH_SECONDS * 1000,
     ...deps.engine,
   });
 
@@ -137,6 +142,7 @@ export async function startWorker(env: Env, log: Logger, deps: WorkerDeps = {}):
       triggerCreators: env.TRIGGER_CREATORS.length > 0 ? env.TRIGGER_CREATORS : "any",
       maxReceiptsPerTriggerPerHour: env.MAX_RECEIPTS_PER_TRIGGER_PER_HOUR,
       stats: engine.stats,
+      quotaUsedPercent: meter.quotaUsedPercent,
       rpc: meter.snapshot(),
     });
   });
@@ -205,8 +211,19 @@ export async function startWorker(env: Env, log: Logger, deps: WorkerDeps = {}):
     }, HEARTBEAT_MS),
   );
 
-  // Calls/min and response bytes by method and query shape (arkiv/friction.md F20).
-  timers.push(setInterval(() => log.info({ rpc: meter.snapshot() }, "rpc usage"), METER_LOG_MS));
+  // Calls/min, cost units and bytes by method and query shape (arkiv/friction.md F20), and the
+  // warnings Arkiv doesn't send: its `Arkiv-Quota-Used-Percent` header is the only signal.
+  let warnedAt = 0;
+  timers.push(
+    setInterval(() => {
+      const rpc = meter.snapshot();
+      log.info({ rpc }, "rpc usage");
+      const used = rpc.quotaUsedPercent;
+      const level = used === null ? 0 : used >= 95 ? 95 : used >= 80 ? 80 : 0;
+      if (level > warnedAt) log.warn({ quotaUsedPercent: used }, `access key quota above ${level}%`);
+      warnedAt = level;
+    }, METER_LOG_MS),
+  );
 
   if (env.SKIP_SEALED) {
     log.warn("SKIP_SEALED=true: DEMO SWITCH ON. Sealed jobs are accepted but will never fire.");

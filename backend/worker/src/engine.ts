@@ -1,18 +1,22 @@
 import {
   evalOnCount,
   evalOnSilence,
+  fetchCandidates,
   findReceipts,
   findSubjectReceipts,
   listWorkers,
   loadTriggers,
-  matchCandidates,
+  matchRows,
   onCreateFiring,
+  pruneCache,
   readLive,
+  readLiveMany,
   recentMatches,
   resultHash,
   sealedEpoch,
   type Destination,
   type Firing,
+  type PayloadCache,
   type RateGate,
   type Reader,
   type ReceiptOutcome,
@@ -69,6 +73,9 @@ interface ReactivatePlan {
 
 export class Engine {
   private triggers = new Map<Hex, TriggerRecord>();
+  /** Trigger and worker payloads, refetched only when `updatedAt` moves (a patch). */
+  private triggerPayloads: PayloadCache = new Map();
+  private workerPayloads: PayloadCache = new Map();
   /** Lowercased creators whose receipts we accept for dedupe: live registered workers + us. */
   private trustedWorkers = new Set<string>();
   private rank = 0;
@@ -76,6 +83,11 @@ export class Engine {
   private inflight = new Set<string>();
   /** Dry-run firings, kept in memory only so they still fire for real once funded. */
   private dryFired = new Set<string>();
+  /**
+   * on_silence: the first block at which each trigger could be silent. Nothing can change that
+   * before then except a newer heartbeat, which only moves it later, so no query is needed.
+   */
+  private silenceDue = new Map<Hex, bigint>();
   /** Per-trigger timestamps of receipts we wrote in the last hour (gas cap). */
   private recent = new Map<Hex, number[]>();
   private timers = new Set<NodeJS.Timeout>();
@@ -114,8 +126,10 @@ export class Engine {
   /** Accepted sealed jobs whose `sealed` entity is still live, as engine triggers. */
   private async loadSealedJobs(): Promise<TriggerRecord[]> {
     const out: TriggerRecord[] = [];
-    for (const [k, job] of Object.entries(this.o.store.data.sealed)) {
-      const live = await readLive(this.o.reader, k as Hex);
+    const jobs = Object.entries(this.o.store.data.sealed);
+    const alive = jobs.length > 0 ? await readLiveMany(this.o.reader, jobs.map(([k]) => k as Hex)) : new Map();
+    for (const [k, job] of jobs) {
+      const live = alive.get(k.toLowerCase() as Hex);
       if (!live) continue; // the owner's sealed entity expired: the job is over
       out.push({
         key: k as Hex,
@@ -131,7 +145,7 @@ export class Engine {
     return out;
   }
 
-  /** Start a just-accepted sealed job now instead of at the next 5-minute refresh. */
+  /** Start a just-accepted sealed job now instead of at the next refresh. */
   async activateSealed(sealedKey: Hex) {
     const job = (await this.loadSealedJobs()).find((t) => t.key === sealedKey);
     if (!job) return;
@@ -151,10 +165,10 @@ export class Engine {
     await this.refresh();
     this.started = true;
     this.watch();
-    this.loop("flush", this.o.flushMs ?? 2_000, () => this.flush());
+    this.loop("flush", this.o.flushMs ?? 5_000, () => this.flush());
     this.loop("poll", this.o.pollMs ?? 30_000, () => this.poll());
-    this.loop("sweep", this.o.sweepMs ?? 10_000, () => this.sweep());
-    this.loop("refresh", this.o.refreshMs ?? 5 * 60_000, () => this.refresh());
+    this.loop("sweep", this.o.sweepMs ?? 30_000, () => this.sweep());
+    this.loop("refresh", this.o.refreshMs ?? 10 * 60_000, () => this.refresh());
     await this.poll().catch((e) => this.fail("poll", e));
     await this.sweep().catch((e) => this.fail("sweep", e));
   }
@@ -189,7 +203,8 @@ export class Engine {
 
   /** Reload triggers + worker set + expiry index, then catch up on_create for anything WS missed. */
   async refresh() {
-    const { triggers, invalid } = await loadTriggers(this.o.reader, "active");
+    const { triggers, invalid } = await loadTriggers(this.o.reader, "active", this.triggerPayloads);
+    pruneCache(this.triggerPayloads, [...triggers.map((t) => t.key), ...invalid.map((i) => i.key)]);
     const allow = this.o.triggerCreators;
     const accepted = allow.length === 0 ? triggers : triggers.filter((t) => allow.includes(lower(t.creator)));
     this.stats.triggersNotAllowed = triggers.length - accepted.length;
@@ -220,14 +235,15 @@ export class Engine {
   }
 
   private async refreshWorkers(): Promise<number> {
-    const workers = await listWorkers(this.o.reader);
+    const workers = await listWorkers(this.o.reader, this.workerPayloads);
+    pruneCache(this.workerPayloads, workers.map((w) => w.key));
     const addrs = [...new Set([...workers.map((w) => lower(w.creator)), lower(this.o.address)])].sort();
     this.trustedWorkers = new Set(addrs);
     this.rank = Math.max(0, addrs.indexOf(lower(this.o.address)));
     return workers.length;
   }
 
-  /** WS push path. Created keys are buffered and flushed in batches (one query per trigger). */
+  /** WS push path. Created keys are buffered and flushed in batches (one query per batch). */
   private watch() {
     const guard = (where: string, p: Promise<void>) => void p.catch((e) => this.fail(where, e));
     this.unwatch = this.o.wsReader.watchEntityEvents({
@@ -255,18 +271,35 @@ export class Engine {
     return out;
   }
 
+  /**
+   * One query fetches every buffered key's attributes; each on_create trigger and query watch is
+   * then matched locally (falling back to the node only where local matching isn't exact).
+   * Before: one query per trigger per batch.
+   */
   private async flush() {
     if (this.pending.size === 0) return;
+    const onCreate = [...this.triggers.values()].filter((t) => t.spec.cond.type === "on_create");
+    if (onCreate.length === 0 && !this.expiry.hasQueryWatches) {
+      this.pending.clear(); // nothing could match: don't spend a query finding out
+      return;
+    }
     const keys = [...this.pending];
     this.pending.clear();
-    for (const t of this.triggers.values()) {
+    let rows;
+    try {
+      rows = await fetchCandidates(this.o.reader, keys);
+    } catch (e) {
+      for (const k of keys) this.pending.add(k); // keep them for the next flush (e.g. after a 429)
+      throw e;
+    }
+    if (rows.length === 0) return;
+    for (const t of onCreate) {
       if (t.spec.cond.type !== "on_create") continue;
-      const matches = await matchCandidates(this.o.reader, t.spec.cond, keys);
-      for (const m of matches) {
+      for (const m of await matchRows(this.o.reader, t.spec.cond, rows)) {
         if (m.createdAt > t.createdAt) await this.fire(t, onCreateFiring(m));
       }
     }
-    await this.expiry.onCreated(keys, await this.o.reader.getBlockNumber());
+    await this.expiry.onCreated(rows, await this.o.reader.getBlockNumber());
   }
 
   /** Pollers for conditions no event can signal: silence and counts. */
@@ -276,12 +309,25 @@ export class Engine {
       if (this.o.gate?.blocked) return; // rate limited mid-pass: the rest waits for the next tick
       const c = t.spec.cond;
       try {
-        const firing =
-          c.type === "on_silence"
-            ? await evalOnSilence(this.o.reader, c, head)
-            : c.type === "on_count"
-              ? await evalOnCount(this.o.reader, c, head)
-              : undefined;
+        let firing: Firing | undefined;
+        if (c.type === "on_silence") {
+          if (head < (this.silenceDue.get(t.key) ?? 0n)) continue;
+          const r = await evalOnSilence(this.o.reader, c, head);
+          // Heard recently: the next possible silence is newest + silence_blocks.
+          if (!r.firing) {
+            this.silenceDue.set(t.key, r.dueAt);
+            continue;
+          }
+          await this.fire(t, r.firing);
+          // Silent and handled: look again at half the window, so a heartbeat that resumes is
+          // seen in time for the next episode. Not handled (error, cap): retry next poll.
+          if (this.handled(t.key, r.firing.epoch)) {
+            this.silenceDue.set(t.key, head + BigInt(Math.max(1, Math.floor(c.silence_blocks / 2))));
+          }
+          continue;
+        } else if (c.type === "on_count") {
+          firing = await evalOnCount(this.o.reader, c, head); // a filtered count: free
+        }
         if (firing) await this.fire(t, firing);
       } catch (e) {
         this.fail(`poll ${t.key}`, e);
@@ -289,7 +335,7 @@ export class Engine {
     }
   }
 
-  /** Expiry sweep (~5 blocks): Arkiv has no expiration event, so deadlines are checked here. */
+  /** Expiry sweep (every 30 s by default, ~15 blocks): Arkiv has no expiration event, so deadlines are checked here. */
   private async sweep() {
     await this.expiry.sweep(await this.o.reader.getBlockNumber());
   }
@@ -301,6 +347,12 @@ export class Engine {
     // A receipt from an unknown creator may be a worker that registered since our last refresh.
     if (receipts.length > 0 && !trusted()) await this.refreshWorkers();
     return trusted();
+  }
+
+  /** Fired by us or a trusted peer, or settled in dry run. */
+  private handled(trigger: Hex, epoch: string): boolean {
+    const id = firedId(trigger, epoch);
+    return Boolean(this.o.store.data.fired[id]) || this.dryFired.has(id);
   }
 
   /** Gas cap: true if we may write another receipt for this trigger now. */

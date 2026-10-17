@@ -54,6 +54,15 @@ const EnvSchema = z.object({
     .transform((v) => v.split(",").map((o) => o.trim().replace(/\/+$/, "")).filter(Boolean))
     .pipe(z.array(z.string().regex(/^https?:\/\/[^/\s*]+$/, "must be comma-separated origins like https://app.example.com (no * or paths)"))),
   TELEGRAM_BOT_TOKEN: optional(z.string()),
+  /**
+   * Read budget (arkiv/friction.md F20). Expiry sweep, silence/count pollers, full refresh of
+   * triggers + workers, and the batch window for WS-created entities. Receipts are only read
+   * when a trigger is about to fire.
+   */
+  SWEEP_SECONDS: z.coerce.number().int().positive().default(30),
+  POLL_SECONDS: z.coerce.number().int().positive().default(30),
+  REFRESH_SECONDS: z.coerce.number().int().positive().default(600),
+  FLUSH_SECONDS: z.coerce.number().int().positive().default(5),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

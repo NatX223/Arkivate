@@ -1,9 +1,10 @@
 import {
   expiryEpoch,
   isExpiryCondition,
-  matchWatchCandidates,
-  readLive,
+  matchRows,
+  readLiveMany,
   snapshotWatch,
+  type CandidateRow,
   type ExpiryCondition,
   type Firing,
   type LiveEntity,
@@ -56,6 +57,12 @@ export class ExpiryWatcher {
     return this.entries.size;
   }
 
+  /** Any trigger watching a query (not a single key)? Only those care about created entities. */
+  get hasQueryWatches(): boolean {
+    for (const { trigger } of this.byTrigger.values()) if (!("entity_key" in trigger.spec.cond.watch)) return true;
+    return false;
+  }
+
   /** Query watches, so the WS prefilter knows which creators matter. */
   queryWatchCreators(): Set<string> | null {
     const out = new Set<string>();
@@ -71,11 +78,16 @@ export class ExpiryWatcher {
   /** Rebuild from the trigger list: index every watched entity at one pinned block. */
   async rebuild(triggers: readonly TriggerRecord[], head: bigint) {
     const next = new Map<Hex, { trigger: ExpiryTrigger; keys: Set<Hex> }>();
-    for (const t of triggers) {
-      if (!isExpiryTrigger(t)) continue;
+    const expiryTriggers = triggers.filter(isExpiryTrigger);
+    // Every single-entity watch in one query, instead of one query each.
+    const single = await readLiveMany(
+      this.reader,
+      expiryTriggers.flatMap((t) => ("entity_key" in t.spec.cond.watch ? [t.spec.cond.watch.entity_key as Hex] : [])),
+    );
+    for (const t of expiryTriggers) {
       const prev = this.byTrigger.get(t.key)?.keys ?? new Set<Hex>();
       const keys = new Set<Hex>(prev);
-      const snap = await snapshotWatch(this.reader, t.spec.cond.watch, head);
+      const snap = await snapshotWatch(this.reader, t.spec.cond.watch, head, single);
       const seen = new Set<Hex>();
       for (const s of snap) {
         seen.add(s.key);
@@ -173,12 +185,12 @@ export class ExpiryWatcher {
     }
   }
 
-  /** `EntityCreated` (WS): add new entities that a query watch covers. */
-  async onCreated(candidates: readonly Hex[], head: bigint) {
+  /** `EntityCreated` (WS): add new entities that a query watch covers (rows already fetched). */
+  async onCreated(rows: readonly CandidateRow[], head: bigint) {
     for (const { trigger, keys } of this.byTrigger.values()) {
       const w = trigger.spec.cond.watch;
       if ("entity_key" in w) continue;
-      for (const s of await matchWatchCandidates(this.reader, w, candidates)) {
+      for (const s of await matchRows(this.reader, w, rows)) {
         keys.add(s.key);
         await this.observe(s.key, s.expiresAt, head);
         this.pin(trigger.key, s.key, s.expiresAt);
@@ -188,11 +200,20 @@ export class ExpiryWatcher {
 
   /** Compare every deadline with the head (every ~5 blocks). */
   async sweep(head: bigint) {
-    const reads = new Map<Hex, LiveEntity | undefined>();
-    const reread = async (k: Hex) => {
-      if (!reads.has(k)) reads.set(k, await readLive(this.reader, k));
-      return reads.get(k);
-    };
+    // Every entity this pass will re-read, fetched up front in one query per 50 keys.
+    const due = new Set<Hex>();
+    for (const { trigger: t, keys } of this.byTrigger.values()) {
+      const c = t.spec.cond;
+      if (c.type !== "on_expiring" && c.type !== "on_expire") continue;
+      for (const k of keys) {
+        const e = this.entries.get(k);
+        if (!e || e.state !== "live") continue;
+        const deadline = (c.deadline === "pinned" ? this.pinned(t.key, k) : undefined) ?? e.expiresAt;
+        if (head >= e.expiresAt || (c.type === "on_expire" && head >= deadline)) due.add(k);
+      }
+    }
+    const live = due.size > 0 ? await readLiveMany(this.reader, due) : new Map<Hex, LiveEntity>();
+    const reread = async (k: Hex) => live.get(k.toLowerCase() as Hex);
 
     for (const { trigger: t, keys } of this.byTrigger.values()) {
       const c = t.spec.cond;
