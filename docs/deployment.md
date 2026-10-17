@@ -6,9 +6,9 @@ other host that runs Node 22; see [Add your own worker](#add-your-own-worker).
 
 | What | Where | Status |
 |---|---|---|
-| Web app (`frontend/`) | Vercel | TODO: live URL |
-| worker-1 | GCP e2-micro VM, `us-central1` | TODO: `https://<ip-with-dashes>.sslip.io/health` |
-| worker-2 | GCP e2-micro VM, `us-east1` | TODO: `https://<ip-with-dashes>.sslip.io/health` |
+| Web app (`frontend/`) | Vercel | https://arkivate.vercel.app |
+| worker-1 | GCP e2-micro VM, `us-central1` | https://34-136-53-253.sslip.io/health |
+| worker-2 | GCP e2-micro VM, `us-east1` | https://34-74-197-9.sslip.io/health |
 
 Each worker has its own VM, region, wallet (see [`WALLETS.md`](../WALLETS.md)), job store and
 secrets. They share nothing but Arkiv.
@@ -85,7 +85,7 @@ The reference deployment doesn't use them.
 | `ARKIV_ACCESS_KEY` | Recommended | | Sent as `X-API-KEY`. A worker polls constantly; the keyless limit is ~100 queries/hour/IP. |
 | `PUBLIC_ENDPOINT` | For sealed jobs | | Public URL published in the `worker` entity (on the VMs: `https://<hostname>`). |
 | `CORS_ORIGINS` | For the web app | `http://localhost:3000` | Exact browser origins (comma-separated, no `*`) allowed on `GET /health` and `POST /sealed`. Denied preflights get 403. |
-| `TRIGGER_CREATORS` | No | empty = any | Comma-separated addresses whose **public triggers and sealed hand-offs** this worker accepts (gas guard). Other sealed hand-offs get 403. |
+| `TRIGGER_CREATORS` | No | empty = any | Optional gas guard: comma-separated addresses whose **public triggers and sealed hand-offs** this worker accepts. When set, other sealed hand-offs get 403. Empty on the reference workers. |
 | `MAX_RECEIPTS_PER_TRIGGER_PER_HOUR` | No | `12` | Gas guard: receipts per trigger per hour from this worker. |
 | `TELEGRAM_BOT_TOKEN` | For Telegram delivery | | Bot used to deliver sealed alerts. Without it, Telegram jobs fail delivery and write no receipt. |
 | `PORT` / `WORKER_PORT` | No | `8787` | Listen port; `PORT` wins if set. The Caddyfile proxies to 8787. |
@@ -100,17 +100,19 @@ Blank values count as unset, so a copied template with empty lines falls back to
 
 ### Gas guards on the reference workers
 
-Every receipt costs the worker gas (measured ~0.00014 GLM each at 1 gwei), and anyone can post a
-public trigger. The reference workers therefore run with `TRIGGER_CREATORS` set (TODO: final list).
-Consequences, stated plainly:
+Every write costs the worker gas (about 0.00017 GLM at 1 gwei for the largest, a Reactivate
+receipt), and anyone can post a public trigger. During judging the reference workers run **open**:
+`TRIGGER_CREATORS` is empty on both VMs, so anyone's public triggers and sealed hand-offs are
+accepted. What limits the cost, stated plainly:
 
-- A public trigger created by someone else will not fire on the reference workers. It will fire on
-  any worker that accepts all creators, including one you run yourself.
-- A sealed hand-off from an unlisted creator is refused with 403 before anything is written.
-- The per-trigger hourly receipt cap applies on top, to listed creators too.
+- `MAX_RECEIPTS_PER_TRIGGER_PER_HOUR=12` caps how often one trigger can make a worker write.
+- Each reference worker holds about 10 GLM, enough for tens of thousands of writes. A flood of
+  distinct triggers could still drain it over time; nothing else stops that today.
+- `TRIGGER_CREATORS` remains an optional gas guard. An operator who sets it runs only the listed
+  creators' public triggers and refuses other sealed hand-offs with 403 before anything is written.
 
-Owner-funded triggers (the owner pays for its own receipts) are on the roadmap and would remove the
-need for an allowlist.
+Owner-funded triggers (the owner pays for its own receipts) are on the roadmap and would make the
+guard unnecessary.
 
 ## Cost
 
@@ -164,5 +166,5 @@ clone with `pnpm worker` (TypeScript via `tsx`, no build step).
    (receipt with `outcome = extended` on the trigger page).
 4. Sealed path: `pnpm cli seal --spec backend/cli/examples/sealed-event-webhook.json --worker worker-1 --webhook <your test URL>`,
    then `pnpm cli demo-feed --kind event --ttl 1440`, then `pnpm cli verify <sealed-key>` after a
-   `reveal`. Use a long `--ttl` so the evidence outlives judging (see `docs/verification.md`). The
-   sealed owner's address must be in the worker's `TRIGGER_CREATORS`.
+   `reveal`. Use a long `--ttl` so the evidence outlives judging (see `docs/verification.md`). If the
+   worker sets `TRIGGER_CREATORS`, the sealed owner's address must be on it.

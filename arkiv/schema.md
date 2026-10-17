@@ -52,7 +52,8 @@ worker should do.
 | `watch_key` | key | only when an expiry condition watches one entity: lets anyone find every trigger on it |
 
 Payload: a TriggerSpec v1 (validated by `PublicTriggerSpec` in `backend/core/src/spec.ts`). The
-action of a public trigger is always `notice`, meaning the only effect is a receipt.
+action of a public trigger is `notice` (the only effect is a receipt) or `extend` (Reactivate: with
+`on_expiring` only, the worker extends the watched entity in the same transaction as the receipt).
 
 ```json
 {

@@ -15,7 +15,7 @@
 Arkivate is **"if this, then that" for Arkiv data, run by independent workers instead of one company's server.**
 
 - Arkiv data is public and queryable, but nothing *happens* when it changes. Expiration emits no event, so apps must poll or sweep deadlines themselves.
-- That's why every team in this hackathon built its own private watcher: Door Ledger's poller, Lapse's re-query loop, Arkiv Canary's cron CLI, Fine Print's snapshotter. Arkivate is the shared one.
+- So every app that needs to react to its data builds its own detection (a poller, a re-query loop, a cron job, a snapshotter), and that automation usually runs on one operator. Arkivate is the shared one.
 
 **One promise per track:**
 - **Open Source:** a reusable trigger engine + worker any Arkiv app can plug into.
@@ -276,14 +276,14 @@ const page = await reader.select({ key: true, attributes: true })
 
 ## 10. Demo (≤3 min)
 
-1. **(0:00) Hook:** "Seven teams built seven private watchers; Arkiv emits nothing on expiry. This is the shared one."
+1. **(0:00) Hook:** "Arkiv emits nothing on expiry, so every app builds its own watcher on one operator's server. This is the shared one."
 2. **(0:20) Public trigger fires:** receipt in the web feed + Telegram alert.
 3. **(0:50) Kill worker A:** worker B still fires; the receipt's `$creator` changes.
 4. **(1:20) Sealed trigger:** Arkiv shows only a hash, yet the alert still arrives.
 5. **(1:50) Worker B "censors" a sealed job:** the owner reveals → verifier shows **SKIPPED: provable**.
 6. **(2:30) Close:** on vs off Arkiv, the extension-attack defence, MIT, one-command workers.
 
-Use the synthetic `demo_feed` for controllable timing. Before relying on Door Ledger data, read their `arkiv/schema.md` so your `where` clause matches their attribute names and types exactly.
+Use the synthetic `demo_feed` for controllable timing. Before watching another app's data, read its schema so your `where` clause matches its attribute names and types exactly.
 
 ---
 

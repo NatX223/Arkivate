@@ -15,14 +15,17 @@ every step prints the `arkiv_query` call that reproduces it. The code is
 | 4. Condition met | re-run the revealed condition for blocks after `accepted_block` | `NOT_TRIGGERED` / `INCONCLUSIVE` |
 | 5. Receipt present | a sealed receipt from that worker whose epoch is `keccak256(salt ‖ raw_epoch)` and whose `fired_block ≤ met_block + 150` | `SKIPPED` (provable censorship); `PENDING` while the 150-block grace window is open; otherwise `FIRED` |
 
-## Real examples on Tiramisu
+## From our test runs (16 Oct)
+
+Historical evidence only: the watched entities have expired, and the sealed entities expire too.
+To see a verdict yourself, create your own sealed trigger (README → Try it yourself, step 5).
 
 | Sealed key | Worker | What happened | Verdict |
 |---|---|---|---|
-| `0x24087b8fb21b1f4e4571a4fd3a6d03170e967176a165fefcc2c9133b07973ec7` | worker-2 (`SKIP_SEALED=true`, the staged censorship demo) | accepted @ 655806; matching event `0xb9e5ac49…` created @ 655860; no receipt by the deadline 656010; owner revealed @ 655904 | `SKIPPED` while the event was live (replayed `atBlock` 656100: every step passes, step 5 fails). **Today: `NOT_TRIGGERED`**, see the limitation below |
-| `0x6c982fb47f885f11e117bea68cf597ff53f004016913847b3c72010eae5888df` | worker-1 | accepted @ 656116; event `0xfe27d4b9…` @ 656136; receipt `0x2987b6ab…` fired @ 656148 | `FIRED` while the event was live (replayed `atBlock` 656300). Today: `NOT_TRIGGERED` |
-| `0xe90e2e92de1c06a236927da947483bf2d7dcf46ac9c3466ceec6227108739f6a` | worker-1 | the published reveal does not hash to the commitment | `INVALID_REVEAL` (permanent: it never depends on live evidence) |
-| `0xcc7c310ebd841970042edba2541606e10b1d556e37470f772a0366bfa7f259e6` | worker-1 | no reveal published | `PENDING` |
+| `0x24087b8f…` | worker-2 (`SKIP_SEALED=true`, the staged censorship demo) | accepted @ 655806; matching event `0xb9e5ac49…` created @ 655860; no receipt by the deadline 656010; owner revealed @ 655904 | `SKIPPED` while the event was live (replayed `atBlock` 656100: every step passes, step 5 fails). **Today: `NOT_TRIGGERED`**, see the limitation below |
+| `0x6c982fb4…` | worker-1 | accepted @ 656116; event `0xfe27d4b9…` @ 656136; receipt `0x2987b6ab…` fired @ 656148 | `FIRED` while the event was live (replayed `atBlock` 656300). Today: `NOT_TRIGGERED` |
+| `0xe90e2e92…` | worker-1 | the published reveal does not hash to the commitment | `INVALID_REVEAL` (doesn't depend on the watched evidence) |
+| `0xcc7c310e…` | worker-1 | no reveal published | `PENDING` |
 
 ## Limitation: verify replays at head, so evidence has to be live
 

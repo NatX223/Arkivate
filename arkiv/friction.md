@@ -11,7 +11,7 @@ commits, so they stay fixed. Index, Arkiv entries first:
 | **Arkiv: SDK** | [F1](#f1--duplicate-sdk-copies-make-u64--expirationtime-values-not-assignable-to-the-sdks-own-types) duplicate SDK copies break branded types · [F2](#f2--no-access-key-option-in-the-sdk-header-must-be-wired-through-viem-by-hand) no access-key option · [F3](#f3--tiramisu-chain-object-has-no-blockexplorers) no `blockExplorers` · [F14](#f14--extendentity-sets-an-expiry-rather-than-adding-to-it-and-expiryextended-doesnt-say-who-extended) `extendEntity` sets rather than adds · [F16](#f16--entities-with-nothing-to-store-still-need-a-payload-and-a-content-type) payload required |
 | **Arkiv: node / RPC** | [F4](#f4--filtered-arkiv_getentitycount-is-undocumented-and-an-unknown-param-silently-returns-the-chain-wide-count) filtered count undocumented, unknown params ignored · [F5](#f5--query-result-order-is-undocumented) result order undocumented · [F7](#f7--no-atomic-create-if-absent-so-multi-worker-dedupe-is-timing-based-and-we-shipped-duplicate-receipts-once) no conditional create · [F8](#f8--the-event-watcher-cant-be-filtered-and-creation-time-isnt-queryable) unfiltered events, `$createdAt` not queryable · [F12](#f12--no-expiration-event-expiry-has-to-be-detected-by-sweeping) no expiry event · [F13](#f13--noentityfounderror-cant-tell-expired-from-deleted-or-never-existed) expired vs deleted · [F15](#f15--write-latency-varies-a-lot-27-s-to-156-s-on-2-s-blocks) write latency spread · [F19](#f19--historical-reads-work-but-their-retention-is-undocumented-so-dispute-evidence-has-no-known-shelf-life) history retention undocumented |
 | **Arkiv: privacy model** | [F17](#f17--our-design-worth-a-line-in-arkivs-privacy-docs-hashes-of-public-data-arent-private-on-arkiv) hashes of public data aren't private |
-| **Arkiv: Hub / faucet** | [F6](#f6--faucet-cooldown-makes-funding-a-multi-wallet-project-take-hours) faucet cooldown |
+| **Arkiv: Hub / faucet** | [F6](#f6--faucet-cooldown-makes-funding-a-multi-wallet-project-take-hours) faucet cooldown · [F20](#f20--the-access-key-quota-ran-out-without-warning-mid-deploy) access-key quota ran out without warning |
 | **[tooling]** (not Arkiv) | [F9](#f9--tooling-windows-locks-prevented-renaming-workspace-folders) Windows folder locks · [F10](#f10--tooling-private-key-pasted-without-the-0x-prefix) key without `0x` · [F11](#f11--tooling-a-duplicated-env-block-silently-blanked-the-worker-key) duplicated `.env` key · [F18](#f18--tooling-nextjs-turbopack-cant-import-a-workspace-package-written-as-esm-typescript) Turbopack and `.js` imports |
 
 Common setup for the SDK snippets below (`npx tsx repro.ts`, Node 22.22.0):
@@ -309,3 +309,19 @@ const wallet = createWalletClient({ chain: tiramisu, transport: http(RPC), accou
   4. Search the SDK and the Arkiv docs for how long `atBlock` history is kept: nothing says.
 - **Workaround:** None shipped yet. The fix on our side is to replay the condition `atBlock` the reveal's creation block (the owner reveals while the evidence is fresh) instead of at head. Until then, a dispute has to be verified while the watched entities are still live (see `docs/verification.md`).
 - **Suggestion:** Document `atBlock` retention for Tiramisu and mainnet (blocks or hours), and return a distinct error when a requested block is beyond it, so verifiers can tell "no data then" from "history pruned".
+
+## F20 — The access-key quota ran out without warning, mid-deploy
+- **When:** 2026-10-17, evening, while deploying the reference workers and the web app
+- **What I did:** Ran two deployed workers (worker-1, worker-2) plus the live web app's read proxy on one Arkiv access key, sent as `X-API-KEY`.
+- **Expected:** A warning before the monthly cap: in the Hub, by email, or in a response header.
+- **Actual:** Reads started failing with rate-limit responses, with no warning beforehand. The web app's `/api/rpc` read proxy logged them and the UI showed "Read quota exhausted". The Hub showed the 1,000,000 cost-unit monthly cap reached.
+- **Versions:** `@arkiv-network/sdk@0.8.1` · `viem@2.56.3` · Node 22.22.0 · Tiramisu (7738577)
+- **Steps to reproduce:**
+  1. Create one access key at https://hub.arkiv.network/api-keys.
+  2. Run a worker's sweep loop (`pnpm worker`: 10 s expiry sweep, 30 s pollers) and the web UI (`pnpm web`) against that key.
+  3. Leave them running until the cap is reached: reads fail with rate-limit responses, and nothing warned on the way.
+- **Workaround:** Requested more usage on the Hub; Arkiv raised the cap to 2,000,000 cost units/month within minutes. We now check usage on the Hub daily.
+- **Suggestion:**
+  - A usage warning at 80% and 95% of the cap (Hub and email).
+  - A remaining-quota response header, so clients can back off before they fail.
+  - Document the cost-unit price of each RPC method, so builders can budget polling. An expiry event ([F12](#f12--no-expiration-event-expiry-has-to-be-detected-by-sweeping)) would remove most of the polling.

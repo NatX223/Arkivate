@@ -243,8 +243,7 @@ function LiveExpiry({ feed, receipts, head, error }: { feed?: FeedEntity[]; rece
         <div className="flex flex-col gap-2 py-6 text-sm text-muted">
           <span className="heading text-fg">Nothing counting down right now.</span>
           <span>
-            Emit a short-lived demo entity with <code className="font-mono text-[13px] text-fg">pnpm cli demo-feed --kind listing</code> and watch a
-            worker keep it alive.
+            Bring an entity of your own, or emit one with <code className="font-mono text-[13px] text-fg">pnpm cli demo-feed --kind listing</code>.
           </span>
         </div>
       ) : (

@@ -7,10 +7,10 @@ receipt for every reaction, so a skipped job can be proven.
 |---|---|
 | **Network** | Arkiv Tiramisu testnet, chain ID `7738577` |
 | **Tracks** | Open Source · Censorship Resistance · Privacy |
-| **Live app** | TODO: Vercel URL |
-| **worker-1 `/health`** | TODO: `https://<ip-with-dashes>.sslip.io/health` (us-central1) |
-| **worker-2 `/health`** | TODO: `https://<ip-with-dashes>.sslip.io/health` (us-east1) |
-| **Demo video** | TODO: link |
+| **Live app** | https://arkivate.vercel.app |
+| **worker-1 `/health`** | https://34-136-53-253.sslip.io/health (us-central1) |
+| **worker-2 `/health`** | https://34-74-197-9.sslip.io/health (us-east1) |
+| **Demo video** | TODO: video link |
 | **License** | [MIT](LICENSE) |
 
 > Testnet only. All data is synthetic.
@@ -63,9 +63,9 @@ The event stream has `EntityCreated`, `EntityPatched`, `ExpiryExtended`, `Owners
 of a missing entity can't even say whether it expired or was deleted
 ([F13](arkiv/friction.md#f13--noentityfounderror-cant-tell-expired-from-deleted-or-never-existed)).
 
-**Every team writes its own watcher.** Apps built on Arkiv, for example Door Ledger, Lapse, Arkiv
-Canary and Fine Print Ledger, need some form of "notice when this changes, renew it before it
-expires, alert me when it dies", and each implements it inside its own app.
+**Every app builds its own detection.** Because nothing is emitted when an entity expires, any Arkiv
+app that needs "notice when this changes, renew it before it expires, alert me when it dies" has to
+write its own poller or deadline sweeper and keep a server running for it.
 
 **Automation today has one operator.** Whoever runs the cron job or the bot can skip a job and
 nobody can prove it, can be pressured to stop, and sees every rule you automate, including the ones
@@ -88,7 +88,7 @@ chosen worker. Anyone can verify what happened from public reads.
 
 ### Flow 1: Reactivate (keep-alive)
 
-Real run on Tiramisu: listing **L1** `0x132af2af…` (`demo_feed`, `kind = listing`, created with
+Real run on Tiramisu (16 Oct; these entities have since expired): listing **L1** `0x132af2af…` (`demo_feed`, `kind = listing`, created with
 `permissionlessExtension`), keep-alive trigger `0xd4ce919d…` with `lead_blocks 40`,
 `extend_blocks 120`, `max_extensions 2` ([spec](backend/cli/examples/keep-alive.json)).
 
@@ -146,7 +146,7 @@ apart from evidence it already holds: a seen delete event, or a disappearance be
 
 ### Flow 4: Provable censorship
 
-Real run: sealed `0x24087b8f…` names **worker-2**, which ran with the demo switch `SKIP_SEALED=true`
+Real run (16 Oct; since expired): sealed `0x24087b8f…` names **worker-2**, which ran with the demo switch `SKIP_SEALED=true`
 (accept sealed jobs, never fire them).
 
 1. worker-2 **accepted** at block 655806.
@@ -206,8 +206,10 @@ What it needs:
   what it would fire.
 - **An Arkiv access key** (recommended): a worker polls constantly and the keyless RPC allows about
   100 queries per hour per IP.
-- **Optional:** `PUBLIC_ENDPOINT` to accept sealed hand-offs, `TRIGGER_CREATORS` to run only public
-  triggers from addresses you choose (a gas guard), `TELEGRAM_BOT_TOKEN` for Telegram delivery.
+- **Optional:** `PUBLIC_ENDPOINT` to accept sealed hand-offs, `TELEGRAM_BOT_TOKEN` for Telegram
+  delivery, and `TRIGGER_CREATORS`, an optional gas guard that limits public triggers and sealed
+  hand-offs to addresses you choose. Leave it empty to accept every creator, as the reference
+  workers do during judging; `MAX_RECEIPTS_PER_TRIGGER_PER_HOUR` (default 12) caps spam either way.
 
 The worker isn't published to npm yet, so there is no `npx` one-liner; it runs from a clone. Hosting
 on a small VM is in [`docs/deployment.md`](docs/deployment.md) and [`docs/deploy-vm.md`](docs/deploy-vm.md).
@@ -337,8 +339,9 @@ answer the dedupe question in one call.
   same brute-force reasoning applies. Only the owner and the chosen worker need it.
 - **Sealed specs and salts before a reveal:** the spec is the intent being protected, and the salt
   would let anyone open the commitment. They are published only if the owner opens a dispute.
-- **Private keys and the Arkiv access key:** they are credentials. Keys live in `.env` or Secret
-  Manager, and the access key stays server-side; the web app's read proxy adds it.
+- **Private keys and the Arkiv access key:** they are credentials. Keys live in `.env` (on a worker
+  VM, `/opt/arkivate/.env`, mode 600), and the access key stays server-side; the web app's read proxy
+  adds it.
 - **Real identities** (names, emails): nothing in Arkivate needs them. Trust comes from wallet
   addresses (`$creator`), and all demo data is synthetic.
 
@@ -372,51 +375,87 @@ Only the features the design rests on. Remove any one row and a part of the prod
 
 ## Try it yourself (for judges)
 
-You need MetaMask on Tiramisu (the site offers to add the network) and testnet GLM from
+Everything below uses entities and triggers you create yourself, so nothing has expired by the time
+you look. You need MetaMask on Tiramisu (the site offers to add the network) and testnet GLM from
 https://hub.arkiv.network/faucet. Reading and verifying need no wallet at all.
 
-1. **See a Reactivate run.** Open TODO: live URL `/triggers/0xd4ce919d7651b3ecf926360b660a893dfe1c73265d72a918027f8f62aaf9aa19`:
-   two `extended` receipts and one `cap_reached`, each created by worker-1 and owned by `0x…dEaD`.
-   TODO: this trigger expires at block 697906; extend it (it is `permissionlessExtension`) before
-   judging, or point to a fresh one.
-2. **Create a keep-alive trigger.** Create → preset **Keep my listing alive** → sign. Watch the
-   trigger page: a worker's receipt appears in the lead window, with the new expiry. Note: the
-   reference workers only run public triggers from allowlisted creators (`TRIGGER_CREATORS`, see
-   [What works](#what-works-and-what-doesnt-yet)); TODO: confirm which path judges take.
-3. **Seal a trigger.** Create → mode **Sealed** → choose a worker → enter a webhook URL or Telegram
-   chat ID → sign. Arkiv gets only the commitment; download the salt backup when offered. The trigger
-   page shows the worker's burned acceptance.
-4. **Verify a skip.** Open TODO: live URL `/verify/<sealed key>` for a SKIPPED example. TODO: the
-   staged example `0x24087b8f…` now returns `NOT_TRIGGERED` because its evidence expired; re-stage
-   it with long-lived evidence before judging.
-5. **Fail on purpose.** Open TODO: live URL `/verify/0xe90e2e92de1c06a236927da947483bf2d7dcf46ac9c3466ceec6227108739f6a`:
-   its published reveal doesn't hash to the commitment, so the verdict is `INVALID_REVEAL`. To make
-   your own: seal with the CLI, edit one field of `spec` in a copy of `~/.arkivate/sealed/<key>.json`,
-   then `pnpm cli reveal <key> --file <copy>` and `pnpm cli verify <key>`.
+App: https://arkivate.vercel.app
 
-**Verify without the UI.** These run against the public RPC with no key. Receipts of the keep-alive
-trigger (expect three, owner `0x…dead`, outcomes `extended`, `extended`, `cap_reached`):
+1. **Get something to watch.**
+   - **Option A: bring your own entity.** Paste the key of any Arkiv entity you already have on
+     Tiramisu. Reactivate can only extend it if it was created with `permissionlessExtension`.
+   - **Option B: emit demo entities from the CLI.**
+
+     ```bash
+     git clone https://github.com/NatX223/Arkivate.git && cd Arkivate
+     corepack enable && pnpm install
+     pnpm wallets                 # prints fresh keys + addresses; writes nothing
+     cp .env.example .env         # set OWNER_PRIVATE_KEY from the output above
+     # fund the owner address: https://hub.arkiv.network/faucet
+     pnpm cli demo-feed --kind listing --blocks 300   # renewable by anyone, ~10 min
+     pnpm cli demo-feed --kind canary --blocks 300    # only its owner can renew it, ~10 min
+     ```
+
+     Each line prints the new entity key and its explorer link. Your **CLI address** is the `owner`
+     address `pnpm wallets` printed.
+2. **Check the workers.** The **Workers** page shows both reference workers online (worker-1 in
+   us-central1, worker-2 in us-east1), each with its address and `/health`.
+3. **Reactivate in the UI.** **Create** → **Public** → *When to fire*: **About to expire** → *What to
+   watch*: **A single entity** (paste your listing key), or **A query** with *Only from this creator*
+   = your CLI address → action **Reactivate** → sign in MetaMask. On the trigger page you'll see
+   `extended` receipts as each deadline approaches, then `cap_reached` once the cap is hit. Open any
+   `extended` receipt's transaction in the explorer: the extension and the receipt are in the same
+   tx.
+4. **Sealed expiry → webhook alert.** Get a URL from https://webhook.site. **Create** → **Sealed**
+   → **Expired** (or **About to expire**) → watch your canary → **Webhook** → paste the URL → worker
+   **worker-1** → sign. Arkiv gets only the commitment; download the salt backup when offered. The
+   trigger page shows worker-1's burned acceptance, and when the canary expires the alert arrives at
+   webhook.site and a sealed receipt (`result_hash` only) appears on the trigger page.
+5. **Provable censorship.** worker-2 runs with the demo switch `SKIP_SEALED=true`: it accepts sealed
+   jobs and never fires them.
+   1. **Create** → **Sealed** → **New entity appears** → *A query* with *Equals* = `event` (kind
+      `event`) → Webhook → worker **worker-2** → sign.
+   2. Wait for worker-2's acceptance on the trigger page, then `pnpm cli demo-feed --kind event`.
+   3. Wait about 5 minutes (the 150-block grace window).
+   4. On the trigger page, **Reveal spec** → sign, then **Verify it** → **`SKIPPED`**, with every
+      step and the read behind it.
+
+   The same steps with **worker-1** give **`FIRED`**. Sealed *expiry* triggers (step 4) verify as
+   **`INCONCLUSIVE`**, because Arkiv can't tell "expired" from "deleted"
+   ([F13](arkiv/friction.md#f13--noentityfounderror-cant-tell-expired-from-deleted-or-never-existed);
+   see [`docs/verification.md`](docs/verification.md)).
+
+**Verify without the UI.** These run against the public RPC with no key. Fill in your own values:
+
+| Placeholder | Where it comes from |
+|---|---|
+| `<your trigger key>` | the trigger page URL, `/triggers/<key>`; or the key `pnpm cli create` prints |
+| `<your sealed key>` | the sealed trigger's page URL, `/triggers/<key>`; or the key `pnpm cli seal` prints |
+| `<worker address>` | the Workers page, or `address` in the worker's `/health` (worker-1 `0xBd9d8aB464aBe5fC9e52911F2d30D9f8144C7a5c`, worker-2 `0xDE94088D98368A81079a897a2278cc52BEeC3D1C`) |
+
+Receipts of your public trigger (expect owner `0x…dead`, and for Reactivate the outcomes
+`extended` … `cap_reached`):
 
 ```bash
-curl -s https://rpc.tiramisu.db-chain.testnet.arkiv.network -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"arkiv_query","params":["project = str('"'"'arkivate'"'"') AND entity_type = str('"'"'receipt'"'"') AND trigger = key(0xd4ce919d7651b3ecf926360b660a893dfe1c73265d72a918027f8f62aaf9aa19)",{"select":{"key":true,"creator":true,"owner":true,"attributes":true}}]}'
+curl -s https://rpc.tiramisu.db-chain.testnet.arkiv.network -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"arkiv_query","params":["project = str('"'"'arkivate'"'"') AND entity_type = str('"'"'receipt'"'"') AND trigger = key(<your trigger key>)",{"select":{"key":true,"creator":true,"owner":true,"attributes":true}}]}'
 ```
 
-worker-2's receipts for the skipped sealed job (expect `"data":[]`):
+The chosen worker's burned acceptance of your sealed job:
 
 ```bash
-curl -s https://rpc.tiramisu.db-chain.testnet.arkiv.network -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"arkiv_query","params":["project = str('"'"'arkivate'"'"') AND entity_type = str('"'"'receipt'"'"') AND trigger = key(0x24087b8fb21b1f4e4571a4fd3a6d03170e967176a165fefcc2c9133b07973ec7) AND $creator = addr(0xDE94088D98368A81079a897a2278cc52BEeC3D1C)",{"select":{"key":true}}]}'
+curl -s https://rpc.tiramisu.db-chain.testnet.arkiv.network -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"arkiv_query","params":["project = str('"'"'arkivate'"'"') AND entity_type = str('"'"'acceptance'"'"') AND sealed = key(<your sealed key>) AND $creator = addr(<worker address>)",{"select":{"key":true,"owner":true,"attributes":true}}]}'
 ```
 
-The matching event, read at block 655870 (`0xa01fe`) although it has since expired (expect
-`0xb9e5ac49…`, `createdAt 0xa01f4` = 655860):
+That worker's receipts for your sealed job (with worker-2, expect `"data":[]`):
 
 ```bash
-curl -s https://rpc.tiramisu.db-chain.testnet.arkiv.network -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"arkiv_query","params":["project = str('"'"'arkivate'"'"') AND entity_type = str('"'"'demo_feed'"'"')",{"select":{"key":true,"createdAt":true},"atBlock":"0xa01fe"}]}'
+curl -s https://rpc.tiramisu.db-chain.testnet.arkiv.network -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"arkiv_query","params":["project = str('"'"'arkivate'"'"') AND entity_type = str('"'"'receipt'"'"') AND trigger = key(<your sealed key>) AND $creator = addr(<worker address>)",{"select":{"key":true,"attributes":true}}]}'
 ```
 
-`pnpm cli verify <sealed-key>` prints a curl command like these for every read it makes.
+`pnpm cli verify <your sealed key>` prints a curl command like these for every read it makes.
 
-**One real transaction per step:**
+**From our test runs (16 Oct).** The entities behind these have since expired, but the transactions
+stay visible in the explorer:
 
 | Step | Transaction |
 |---|---|
@@ -452,10 +491,12 @@ curl -s https://rpc.tiramisu.db-chain.testnet.arkiv.network -H 'content-type: ap
   tell expired from deleted, and its history retention is undocumented
   ([F19](arkiv/friction.md#f19--historical-reads-work-but-their-retention-is-undocumented-so-dispute-evidence-has-no-known-shelf-life)).
   `atBlock` reads still worked 13,300 blocks back, so the fix is to replay at the reveal's block.
-- **The reference workers are allowlisted.** They run with `TRIGGER_CREATORS` set so strangers can't
-  drain their gas with spam triggers. The allowlist covers sealed hand-offs too (an unlisted
-  creator gets 403), and the per-trigger hourly receipt cap applies on top. Open use needs
-  owner-funded triggers (roadmap) or your own worker.
+- **The reference workers run open, and pay for everyone's receipts.** During judging they accept
+  public triggers and sealed hand-offs from any creator (`TRIGGER_CREATORS` empty). Spam is capped by
+  `MAX_RECEIPTS_PER_TRIGGER_PER_HOUR=12`, and each worker holds about 10 GLM against about
+  0.00017 GLM per write, so a flood of triggers could still drain them over time. `TRIGGER_CREATORS`
+  remains as an optional gas guard for operators who want it; owner-funded triggers (roadmap) would
+  remove the need for it.
 - **Dedupe is timing-based.** Arkiv has no conditional create
   ([F7](arkiv/friction.md#f7--no-atomic-create-if-absent-so-multi-worker-dedupe-is-timing-based-and-we-shipped-duplicate-receipts-once)),
   so a primary that stalls past its slot causes a duplicate receipt. We shipped one with a 2 s slot
@@ -507,7 +548,7 @@ payloads: [`arkiv/schema.md`](arkiv/schema.md).
 
 ## Friction report
 
-19 entries, each with versions, numbered steps to reproduce, expected vs actual, our workaround and a
+20 entries, each with versions, numbered steps to reproduce, expected vs actual, our workaround and a
 suggestion for Arkiv: [`arkiv/friction.md`](arkiv/friction.md). The ones that shaped the
 design:
 
@@ -558,7 +599,7 @@ docs/                     technical plan, verification, deployment, local setup,
 ## Tests
 
 ```bash
-pnpm test        # vitest: 39 tests in 3 files, all passing
+pnpm test        # vitest: 54 tests in 5 files, all passing
 pnpm typecheck   # tsc -b across all packages, clean
 pnpm hello       # Phase 0 smoke test against Tiramisu (needs a funded owner wallet)
 ```
@@ -589,9 +630,9 @@ different regions (us-central1 and us-east1), each with its own wallet and job s
 the worker as plain Node 22 under systemd, behind Caddy serving HTTPS on an `sslip.io` hostname
 (`deploy/vm/`). Any operator can add more workers the same way, or on any host with Node 22.
 
-- Web app: TODO: live URL
-- worker-1: TODO: `https://…/health`
-- worker-2: TODO: `https://…/health`
+- Web app: https://arkivate.vercel.app
+- worker-1: https://34-136-53-253.sslip.io/health
+- worker-2: https://34-74-197-9.sslip.io/health
 
 Overview, order, cost and env tables: [`docs/deployment.md`](docs/deployment.md). Console
 walkthrough: [`docs/deploy-vm.md`](docs/deploy-vm.md).
@@ -643,7 +684,7 @@ The four addresses that create entities on Tiramisu, with their roles: [`WALLETS
 | [pino](https://getpino.io) | 10.4.0 | MIT | worker logs |
 | [commander](https://github.com/tj/commander.js) | 15.0.0 | MIT | CLI |
 | [dotenv](https://github.com/motdotla/dotenv) | 18.0.8 | BSD-2-Clause | local env loading |
-| [tsx](https://tsx.is), TypeScript, Vitest | 4.23.15 / 5.9.3 / 5.0.5 | MIT / Apache-2.0 / MIT | run from source, typecheck, tests |
+| [tsx](https://github.com/privatenumber/tsx), TypeScript, Vitest | 4.23.15 / 5.9.3 / 5.0.5 | MIT / Apache-2.0 / MIT | run from source, typecheck, tests |
 
 ## How this was built
 
@@ -654,8 +695,8 @@ README comes from those runs. Friction was logged as it happened, not reconstruc
 ## Roadmap
 
 - **Preserve:** archive an entity's payload and attributes before it expires (a new action).
-- **Owner-funded triggers:** the trigger owner pays for its own receipts, so workers can drop the
-  allowlist and accept anyone.
+- **Owner-funded triggers:** the trigger owner pays for its own receipts, so open workers don't
+  carry everyone's gas.
 - **Replay at the reveal block** in `verify`, so disputes don't decay with the evidence (F19).
 - **More delivery targets** for sealed triggers (email relay, Matrix, Discord), still off-chain.
 - **A shared cross-app trigger schema** so any Arkiv app can post triggers without Arkivate's code.

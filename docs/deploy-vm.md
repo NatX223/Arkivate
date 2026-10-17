@@ -11,6 +11,8 @@ behind Caddy, which serves HTTPS on a free `sslip.io` hostname. Overview, cost a
 | Region / zone | `us-central1` (e.g. `us-central1-a`) | `us-east1` (e.g. `us-east1-b`) |
 | Wallet | `worker-1` row in [WALLETS.md](../WALLETS.md) | `worker-2` row |
 | Env file | `worker-1.env` | `worker-2.env` |
+| Hostname (live) | `34-136-53-253.sslip.io` | `34-74-197-9.sslip.io` |
+| `/health` | https://34-136-53-253.sslip.io/health | https://34-74-197-9.sslip.io/health |
 
 The two workers share nothing but Arkiv: separate VMs, regions, wallets and job stores.
 
@@ -19,7 +21,8 @@ The two workers share nothing but Arkiv: separate VMs, regions, wallets and job 
 - Both worker wallets are funded on Tiramisu (https://hub.arkiv.network/faucet). An unfunded worker
   runs, but stays in read-only `dry-run` mode.
 - An Arkiv access key (https://hub.arkiv.network/api-keys). One key can serve both workers.
-- The list of creator addresses the reference workers should accept (`TRIGGER_CREATORS`).
+- Optional: a list of creator addresses to accept (`TRIGGER_CREATORS`, a gas guard). The reference
+  workers leave it empty during judging, so they accept every creator.
 - The frontend URL is not needed yet; you add it in step 7.
 
 ## 1. Reserve a static IP (per worker)
@@ -60,11 +63,12 @@ WORKER_PRIVATE_KEY=<worker-1 key>
 WORKER_NAME=worker-1
 PUBLIC_ENDPOINT=https://34-123-45-67.sslip.io
 ARKIV_ACCESS_KEY=<access key>
-TRIGGER_CREATORS=<comma-separated 0x addresses>
+TRIGGER_CREATORS=
 CORS_ORIGINS=http://localhost:3000
 ```
 
-Leave the rest blank (defaults apply). `PUBLIC_ENDPOINT` is `https://` + the hostname, no trailing
+Leave the rest blank (defaults apply). An empty `TRIGGER_CREATORS` accepts every creator; set it
+to comma-separated `0x` addresses only if you want the gas guard. `PUBLIC_ENDPOINT` is `https://` + the hostname, no trailing
 slash. `CORS_ORIGINS` gets the Vercel URL in step 7.
 
 ## 4. Run setup (per worker)
@@ -151,7 +155,7 @@ the Caddyfile.
 | `Invalid environment configuration` | Fix the named variable in `/opt/arkivate/.env`. Private keys are 64 hex chars, `0x` optional. |
 | `"mode": "dry-run"` | Fund the worker address at the faucet. |
 | Browser: CORS error on `/health` or `/sealed` | The page's origin is not in `CORS_ORIGINS` exactly (step 7). |
-| `POST /sealed` → 403 "TRIGGER_CREATORS allowlist" | The sealed trigger's creator isn't in this worker's `TRIGGER_CREATORS`. |
+| `POST /sealed` → 403 "TRIGGER_CREATORS allowlist" | `TRIGGER_CREATORS` is set and the sealed trigger's creator isn't on it. Empty it to accept everyone. |
 | `pnpm install` killed | Out of memory; check the swapfile exists (`swapon --show`) and re-run `setup.sh`. |
 
 ## Teardown (after 23 Oct 2026)
