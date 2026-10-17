@@ -95,7 +95,7 @@ Real run on Tiramisu (16 Oct; these entities have since expired): listing **L1**
 1. **Post** the trigger: a `trigger` entity whose payload is the full spec
    ([tx `0x92c875e1…`](https://tiramisu.explorer.arkiv.network/tx/0x92c875e15eb26af4342f2817feaa8d5acfdde8181be9f832687351a12da61e7c), block 654706).
 2. **Index** the deadline: every worker indexes L1's `expiresAt` (654818) and sweeps it against the
-   head every 10 s.
+   head every 30 s (`SWEEP_SECONDS`; it was 10 s when this run was recorded).
 3. **Fire** at `654818 − 40`: at block 654778 the head enters the lead window. worker-1 (rank 0)
    checks that no registered worker has a receipt for this epoch yet.
 4. **Extend and receipt, atomically:** one `executeBatch` extends L1 to `ExpirationTime.atBlock(654938)`,
@@ -115,12 +115,13 @@ receipt says `not_extendable` and nothing else happens
 ### Flow 2: Expire, renew, delete
 
 The expiry engine ([`backend/worker/src/expiry.ts`](backend/worker/src/expiry.ts)) keeps a persisted
-index `entity key → expiresAt` for everything a trigger watches, rebuilt every 5 minutes at one
-pinned block and kept fresh by WebSocket events in between.
+index `entity key → expiresAt` for everything a trigger watches, rebuilt at one pinned block when a
+free `arkiv_getEntityCount` shows triggers changed (and every 30 minutes as a safety net), and kept
+fresh by WebSocket events in between.
 
 | Event | How a worker detects it | Real run |
 |---|---|---|
-| **Expired** | 10 s sweep: head ≥ `expiresAt`, then re-read; gone and no delete seen → expired | canary `0x89538f96…`, `expiresAt 654834`, confirmed at head 654838, receipt mined at 654841 |
+| **Expired** | 30 s sweep (10 s when recorded): head ≥ `expiresAt`, then re-read; gone and no delete seen → expired | canary `0x89538f96…`, `expiresAt 654834`, confirmed at head 654838, receipt mined at 654841 |
 | **Renewed** | `ExpiryExtended` over WebSocket, or a later `expiresAt` found on rebuild | `on_extend` fired for `0xbd8b1748…` at 654773; the `on_expiring` trigger on the same entity re-armed for the new deadline and fired at 654988 |
 | **Deleted** | `EntityDeleted` over WebSocket, or the entity vanishing **before** its known `expiresAt` | `on_delete` fired for `0x5a06771e…` at 654775; the `on_expire` trigger on the same entity never fired |
 
@@ -218,11 +219,11 @@ on a small VM is in [`docs/deployment.md`](docs/deployment.md) and [`docs/deploy
 
 | Condition | Fires when | One receipt per (epoch) | Detected by |
 |---|---|---|---|
-| `on_create` | a new entity matching `where` (and `created_by`, if set) is created after the trigger | matched entity: `create:<key>` | `EntityCreated` over WebSocket, batched every 2 s; 5-minute catch-up query |
+| `on_create` | a new entity matching `where` (and `created_by`, if set) is created after the trigger | matched entity: `create:<key>` | `EntityCreated` over WebSocket, batched every 5 s and gated by a free count (one query per batch for all triggers, only if something matches); catch-up query on each refresh |
 | `on_silence` | the newest matching entity from the trusted `created_by` is older than `silence_blocks`, or none is live | silence episode: `silence:<last key>` | 30 s poll (uses creation block, so extending an old heartbeat can't mask silence) |
 | `on_count` | the filtered count satisfies `count_op count_value` | ~1 h bucket: `count:<head / 1800>` | 30 s poll via raw `arkiv_getEntityCount` |
-| `on_expiring` | head ≥ deadline − `lead_blocks` | deadline: `expiring:<subject>:<deadline>` | 10 s sweep of the expiry index |
-| `on_expire` | the deadline has passed and the entity is gone (`follow`), or the pinned deadline has passed (`pinned`) | deadline: `expire:<subject>:<deadline>` | 10 s sweep, then a re-read |
+| `on_expiring` | head ≥ deadline − `lead_blocks` | deadline: `expiring:<subject>:<deadline>` | 30 s sweep of the expiry index |
+| `on_expire` | the deadline has passed and the entity is gone (`follow`), or the pinned deadline has passed (`pinned`) | deadline: `expire:<subject>:<deadline>` | 30 s sweep, then a batched re-read |
 | `on_extend` | the entity's expiry moved later | new expiry: `extend:<subject>:<new_expires_at>` | `ExpiryExtended`, or a later `expiresAt` on rebuild |
 | `on_delete` | the entity was deleted | once: `delete:<subject>` | `EntityDeleted`, or gone before its deadline |
 
@@ -372,6 +373,10 @@ Only the features the design rests on. Remove any one row and a part of the prod
 | Event → receipt mined (rank 0) | 3–4 blocks typical; up to 18 when one worker fires many triggers at once (writes are serialised per wallet) | `evidence_block` vs creation block of every public receipt |
 | Expiry detection lag | 4 blocks (`expiresAt 654834`, confirmed at 654838) | [F12](arkiv/friction.md#f12--no-expiration-event-expiry-has-to-be-detected-by-sweeping) |
 | Failover delay | ~12 s rank slot; measured 20 s event → receipt with worker-2 alone vs 6–8 s for rank 0 | receipts above |
+| Read cost | Every `arkiv_query` costs a flat 100 units (69 B and 72 KB alike); `arkiv_getEntityCount` and `eth_*` cost 0 | `Arkiv-Cost` response header, 17 Oct ([F20](arkiv/friction.md#f20--the-access-key-quota-ran-out-without-warning-mid-deploy-and-a-429-at-startup-crash-looped-the-workers)) |
+| Read budget, one worker | Before: 6.1 queries/min ≈ 36,000 units/h. After: startup load (10 queries), then 0 queries in the next 9.3 min; ≈ 1,000 units/h projected | `/health` → `rpc`, 10-min keyless runs, 18 Oct ([F20](arkiv/friction.md#f20--the-access-key-quota-ran-out-without-warning-mid-deploy-and-a-429-at-startup-crash-looped-the-workers)) |
+| Read budget, web app | Before: 32 queries/min ≈ 193,000 units/h *per open tab*. After: 0.5 queries/min ≈ 3,000 units/h shared by all visitors | `/api/rpc` + `/api/snapshot` logs, same runs |
+| Read budget, whole deployment (2 workers + 1 tab) | ≈ 265,000 → ≈ 5,000 units/h (~50× fewer) | sum of the above |
 
 ## Try it yourself (for judges)
 
@@ -557,6 +562,7 @@ design:
 - [F14](arkiv/friction.md#f14--extendentity-sets-an-expiry-rather-than-adding-to-it-and-expiryextended-doesnt-say-who-extended): `extendEntity` sets an expiry rather than adding to it, and `ExpiryExtended` doesn't say who extended.
 - [F7](arkiv/friction.md#f7--no-atomic-create-if-absent-so-multi-worker-dedupe-is-timing-based-and-we-shipped-duplicate-receipts-once): no conditional create, so multi-writer dedupe is timing-based.
 - [F4](arkiv/friction.md#f4--filtered-arkiv_getentitycount-is-undocumented-and-an-unknown-param-silently-returns-the-chain-wide-count): filtered `arkiv_getEntityCount` is undocumented, and a typo in its params silently counts the whole chain.
+- [F20](arkiv/friction.md#f20--the-access-key-quota-ran-out-without-warning-mid-deploy-and-a-429-at-startup-crash-looped-the-workers): the quota ran out without warning, and every query costs 100 units whatever it returns, so the budget is queries, not bytes.
 - [F17](arkiv/friction.md#f17--our-design-worth-a-line-in-arkivs-privacy-docs-hashes-of-public-data-arent-private-on-arkiv): hashes of public data aren't private on Arkiv; salt everything.
 
 ## Code tour
@@ -581,7 +587,7 @@ backend/
 ├─ worker/src/            @arkivate/worker: one process per worker identity
 │  ├─ index.ts            boot, registration, heartbeat, GET /health
 │  ├─ engine.ts           trigger loop: events, pollers, rank backoff, dedupe, firing
-│  ├─ expiry.ts           expiry index + 10 s sweep, expired vs deleted, pinned deadlines
+│  ├─ expiry.ts           expiry index + 30 s sweep, expired vs deleted, pinned deadlines
 │  ├─ chain.ts            every write: register, acceptance, receipt (+ extend) as burned batches
 │  ├─ handoff.ts          POST /sealed: verify signature + commitment, write acceptance
 │  ├─ deliver.ts          webhook / Telegram delivery, errors scrubbed of secrets

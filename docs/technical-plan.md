@@ -122,7 +122,7 @@ start:
   WS watchEntityEvents → EntityCreated:
       cheap owner filter → getEntity → eval on_create
   every 30 s: eval on_silence + on_count (pinned atBlock)
-  every 5 min: catch-up query (dropped WS) + refresh trigger list
+  when free counts change (else every 30 min): catch-up query (dropped WS) + refresh trigger list
   every 6 h: extend own worker entity
 
 fire(trigger, epoch, evidence):

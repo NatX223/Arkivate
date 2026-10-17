@@ -11,7 +11,7 @@ commits, so they stay fixed. Index, Arkiv entries first:
 | **Arkiv: SDK** | [F1](#f1--duplicate-sdk-copies-make-u64--expirationtime-values-not-assignable-to-the-sdks-own-types) duplicate SDK copies break branded types · [F2](#f2--no-access-key-option-in-the-sdk-header-must-be-wired-through-viem-by-hand) no access-key option · [F3](#f3--tiramisu-chain-object-has-no-blockexplorers) no `blockExplorers` · [F14](#f14--extendentity-sets-an-expiry-rather-than-adding-to-it-and-expiryextended-doesnt-say-who-extended) `extendEntity` sets rather than adds · [F16](#f16--entities-with-nothing-to-store-still-need-a-payload-and-a-content-type) payload required |
 | **Arkiv: node / RPC** | [F4](#f4--filtered-arkiv_getentitycount-is-undocumented-and-an-unknown-param-silently-returns-the-chain-wide-count) filtered count undocumented, unknown params ignored · [F5](#f5--query-result-order-is-undocumented) result order undocumented · [F7](#f7--no-atomic-create-if-absent-so-multi-worker-dedupe-is-timing-based-and-we-shipped-duplicate-receipts-once) no conditional create · [F8](#f8--the-event-watcher-cant-be-filtered-and-creation-time-isnt-queryable) unfiltered events, `$createdAt` not queryable · [F12](#f12--no-expiration-event-expiry-has-to-be-detected-by-sweeping) no expiry event · [F13](#f13--noentityfounderror-cant-tell-expired-from-deleted-or-never-existed) expired vs deleted · [F15](#f15--write-latency-varies-a-lot-27-s-to-156-s-on-2-s-blocks) write latency spread · [F19](#f19--historical-reads-work-but-their-retention-is-undocumented-so-dispute-evidence-has-no-known-shelf-life) history retention undocumented |
 | **Arkiv: privacy model** | [F17](#f17--our-design-worth-a-line-in-arkivs-privacy-docs-hashes-of-public-data-arent-private-on-arkiv) hashes of public data aren't private |
-| **Arkiv: Hub / faucet** | [F6](#f6--faucet-cooldown-makes-funding-a-multi-wallet-project-take-hours) faucet cooldown · [F20](#f20--the-access-key-quota-ran-out-without-warning-mid-deploy) access-key quota ran out without warning |
+| **Arkiv: Hub / faucet** | [F6](#f6--faucet-cooldown-makes-funding-a-multi-wallet-project-take-hours) faucet cooldown · [F20](#f20--the-access-key-quota-ran-out-without-warning-mid-deploy-and-a-429-at-startup-crash-looped-the-workers) quota ran out without warning; every query costs 100 units |
 | **[tooling]** (not Arkiv) | [F9](#f9--tooling-windows-locks-prevented-renaming-workspace-folders) Windows folder locks · [F10](#f10--tooling-private-key-pasted-without-the-0x-prefix) key without `0x` · [F11](#f11--tooling-a-duplicated-env-block-silently-blanked-the-worker-key) duplicated `.env` key · [F18](#f18--tooling-nextjs-turbopack-cant-import-a-workspace-package-written-as-esm-typescript) Turbopack and `.js` imports |
 
 Common setup for the SDK snippets below (`npx tsx repro.ts`, Node 22.22.0):
@@ -59,7 +59,7 @@ const wallet = createWalletClient({ chain: tiramisu, transport: http(RPC), accou
 ## F2 — No access-key option in the SDK; header must be wired through viem by hand
 - **When:** 2026-10-15 23:40 BST
 - **What I did:** Read `dist/index.d.ts` for how to pass the Hub access key to `createPublicClient` / `createWalletClient`.
-- **Expected:** An `accessKey` option, or a JSDoc example showing the header (the keyless RPC is rate-limited to ≈100 queries/hour/IP).
+- **Expected:** An `accessKey` option, or a JSDoc example showing the header (the keyless RPC is rate-limited to ≈100 queries/hour/IP; measured in [F20](#f20--the-access-key-quota-ran-out-without-warning-mid-deploy-and-a-429-at-startup-crash-looped-the-workers): 10,000 units/hour at 100 units per query).
 - **Actual:** There is no mention of access keys anywhere in `dist/` (`grep -ri "api-key\|apikey\|access.key"` finds nothing). Every example uses bare `http()`.
 - **Versions:** `@arkiv-network/sdk@0.8.1` · `viem@2.56.3` · Node 22.22.0 · Tiramisu (7738577)
 - **Steps to reproduce:**
@@ -156,7 +156,7 @@ const wallet = createWalletClient({ chain: tiramisu, transport: http(RPC), accou
   1. `wsClient.watchEntityEvents({ onEntityCreated: (e) => console.log(e) })`.
   2. Create one entity from your wallet: its event carries `entityKey`, `owner`, `expiresAt` and `creationFlags` only, and events from every other wallet on the chain arrive too.
   3. `client.select({ key: true }).where(eq("$createdAt", u64(1))).fetch()` throws `InvalidPredicateError: "$createdAt" is returned in query results but carries no index`.
-- **Workaround:** Pre-filter events by `owner` (the creator at creation time) when every trigger names a creator. Buffer keys for 2 s and send one query per trigger: `<filter> AND ($key = … OR $key = …)`. Catch up every 5 min with the newest 50 matches, filtered to `createdAt > trigger.createdAt`.
+- **Workaround:** Pre-filter events by `owner` (the creator at creation time) when every trigger names a creator. Buffer keys for 2 s and send one query per trigger: `<filter> AND ($key = … OR $key = …)`. Catch up every 5 min with the newest 50 matches, filtered to `createdAt > trigger.createdAt`. **Update 18 Oct ([F20](#f20--the-access-key-quota-ran-out-without-warning-mid-deploy-and-a-429-at-startup-crash-looped-the-workers)):** one query per batch for all triggers, gated by a free `arkiv_getEntityCount` of `$key IN (batch) AND (filter OR …)`, because a trigger without a creator lets every new entity on the chain through the pre-filter.
 - **Suggestion:** Index `$createdAt` (it is already an ordered `u64`), and/or allow a server-side filter on the event subscription (creator, `project` / `entity_type` attributes).
 
 ## F9 — [tooling] Windows locks prevented renaming workspace folders
@@ -208,7 +208,7 @@ const wallet = createWalletClient({ chain: tiramisu, transport: http(RPC), accou
   2. `const { entityKey } = await wallet.createEntity({ payload: jsonToPayload({}), contentType: "application/json", attributes: { project: "f12" }, expires: ExpirationTime.fromBlocks(60) })`, then read `expiresAt` with `client.getEntity(entityKey)`.
   3. Wait until the head passes `expiresAt` (about 2 minutes): no event for the key arrives, and `ENTITY_EVENTS_ABI` in the SDK has no expiry event.
   4. `client.getEntity(entityKey)` with the head equal to `expiresAt` already throws `NoEntityFoundError`.
-- **Workaround:** The worker keeps an index `key → expiresAt` (persisted, so expiries during downtime are still caught), sweeps it every 10 s against the head, and re-reads at the deadline to confirm.
+- **Workaround:** The worker keeps an index `key → expiresAt` (persisted, so expiries during downtime are still caught), sweeps it every 10 s against the head (30 s since F20), and re-reads at the deadline to confirm.
 - **Suggestion:** Emit `EntityExpired` from the node (even as a synthetic log per block), or offer a subscription such as "entities expiring within N blocks". Document whether `expiresAt` is inclusive.
 
 ## F13 — `NoEntityFoundError` can't tell expired from deleted (or never existed)
@@ -310,18 +310,41 @@ const wallet = createWalletClient({ chain: tiramisu, transport: http(RPC), accou
 - **Workaround:** None shipped yet. The fix on our side is to replay the condition `atBlock` the reveal's creation block (the owner reveals while the evidence is fresh) instead of at head. Until then, a dispute has to be verified while the watched entities are still live (see `docs/verification.md`).
 - **Suggestion:** Document `atBlock` retention for Tiramisu and mainnet (blocks or hours), and return a distinct error when a requested block is beyond it, so verifiers can tell "no data then" from "history pruned".
 
-## F20 — The access-key quota ran out without warning, mid-deploy
-- **When:** 2026-10-17, evening, while deploying the reference workers and the web app
-- **What I did:** Ran two deployed workers (worker-1, worker-2) plus the live web app's read proxy on one Arkiv access key, sent as `X-API-KEY`.
-- **Expected:** A warning before the monthly cap: in the Hub, by email, or in a response header.
-- **Actual:** Reads started failing with rate-limit responses, with no warning beforehand. The web app's `/api/rpc` read proxy logged them and the UI showed "Read quota exhausted". The Hub showed the 1,000,000 cost-unit monthly cap reached.
-- **Versions:** `@arkiv-network/sdk@0.8.1` · `viem@2.56.3` · Node 22.22.0 · Tiramisu (7738577)
+## F20 — The access-key quota ran out without warning, mid-deploy, and a 429 at startup crash-looped the workers
+- **When:** 2026-10-17, evening, while deploying the reference workers and the web app; again about an hour after the cap was raised.
+- **What I did:** Ran two deployed workers (worker-1, worker-2) and the live web app's read proxy on one Arkiv access key, sent as `X-API-KEY`.
+- **Expected:** A warning before the monthly cap (Hub, email or a response header), a documented price per call, and a rate-limit error the SDK can recognise.
+- **Actual:**
+  - The key hit its 1,000,000 cost-unit monthly cap with no warning. Arkiv raised it to 2,000,000, and that was gone within about an hour. The Hub showed **~2,000,000 units over 37,244 calls ≈ 54 units per call**.
+  - A spent key answers `HTTP 429` with body `{"error":"QUOTA_EXCEEDED","message":"quota exhausted"}`, header `Arkiv-Quota-Used-Percent: 100`, and **no `Retry-After`**.
+  - Both workers then crash-looped: a startup read got the 429, the process exited with status 1, systemd restarted it every 5 s, and every restart re-read Arkiv (restart counters 14 and 17). The web app retried in a tight loop behind "Read quota exhausted", so every open tab kept spending.
+- **What we measured afterwards** (Tiramisu, 17–18 Oct; every response carries the cost in an `Arkiv-Cost` header):
+  - Every `arkiv_query` costs a **flat 100 units**, whatever it returns: an empty 69-byte result and a 72 KB page of 200 receipts with payloads both cost 100. `arkiv_getEntityCount`, `eth_blockNumber`, `eth_getBalance` and `eth_chainId` carry no cost and still answer at 100% quota. That explains the Hub's 54 units/call: about 54% of our calls were queries.
+  - So the quota is a budget of **queries**, not bytes. Selecting fewer fields saves bandwidth, not units.
+  - Keyed responses carry `Arkiv-Quota-Used-Percent`. The keyless endpoint carries `RateLimit: limit=600, …` (a short window) and a second **10,000 units/hour per IP** limit (`RateLimit: limit=10000`, with `Retry-After`), i.e. 100 queries/hour. None of these headers is documented.
+- **Before / after** (10-minute runs on the keyless endpoint, so no service key was spent; one worker on a fresh throwaway wallet, plus the site with one tab open; units = billed `arkiv_query` × 100):
+
+  | | Before (`81bf439`, same polling as the deployed `c868c47`) | After (`357fe51`) |
+  |---|---|---|
+  | One worker | 63 queries / 10.3 min ≈ **36,000 units/h** (6.1 queries/min) | 10 queries, all in the first minute (startup), then **0** for 9.3 min; ≈ 1,000 units/h projected (30-min safety refresh) |
+  | Site, one open tab | 331 queries / 10.3 min ≈ **193,000 units/h** (32 queries/min) | 13 queries / 26 min ≈ **3,000 units/h** for *all* visitors together (shared, CDN-cached snapshot) |
+  | Deployment (2 workers + 1 tab) | ≈ 265,000 units/h | ≈ 5,000 units/h (**~50× fewer**; ~400× fewer than the 2M/h we saw) |
+
+  Top costs before: the site's trigger, demo-feed, sealed and receipt lists (every 10 s, ~180,000 units/h together) and the worker's per-trigger checks of new entities from WebSocket events.
 - **Steps to reproduce:**
-  1. Create one access key at https://hub.arkiv.network/api-keys.
-  2. Run a worker's sweep loop (`pnpm worker`: 10 s expiry sweep, 30 s pollers) and the web UI (`pnpm web`) against that key.
-  3. Leave them running until the cap is reached: reads fail with rate-limit responses, and nothing warned on the way.
-- **Workaround:** Requested more usage on the Hub; Arkiv raised the cap to 2,000,000 cost units/month within minutes. We now check usage on the Hub daily.
+  1. `curl -si -X POST https://rpc.tiramisu.db-chain.testnet.arkiv.network -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"arkiv_query","params":["project = str('"'"'nothing'"'"')",{"select":{"key":true},"limit":"0x1"}]}' | grep -i 'arkiv-cost\|ratelimit'` prints `arkiv-cost: 100` for an empty result.
+  2. Repeat with `"limit":"0xc8"` and `"select":{"key":true,"attributes":true,"payload":true}` on `project = str('arkivate') AND entity_type = str('receipt')`: 72 KB, still `arkiv-cost: 100`.
+  3. Send `arkiv_getEntityCount` (`"params":[{"query":"project = str('arkivate')"}]`) or `eth_blockNumber`: no `arkiv-cost` header, and both still succeed on a key at 100%.
+  4. With a spent key (`-H 'X-API-KEY: …'`), the query in step 1 returns `429 {"error":"QUOTA_EXCEEDED"}` with `arkiv-quota-used-percent: 100` and no `Retry-After`.
+- **Workaround:**
+  - 429 is never fatal: backoff 30 s → 60 s → … 10 min (honouring `Retry-After` when present), `/health` up before the first read with `"mode": "rate_limited"`, polling ×4 slower after 3 consecutive 429s, systemd `RestartSec=30` + `StartLimitIntervalSec=0`. A free call succeeding doesn't end a query backoff ([`core/src/ratelimit.ts`](../backend/core/src/ratelimit.ts), [`worker/src/supervisor.ts`](../backend/worker/src/supervisor.ts)).
+  - Spend free calls instead of queries: filtered counts gate every receipt lookup, every batch of new entities, the refresh of triggers and workers, and silent heartbeats; batched `$key IN (…)` reads ([`worker/src/engine.ts`](../backend/worker/src/engine.ts), [`core/src/conditions.ts`](../backend/core/src/conditions.ts)).
+  - The site reads one shared snapshot (one query lists all ~90 Arkivate entities) that is rebuilt only when the free count changes, or every 5 min ([`app/api/snapshot/route.ts`](../frontend/src/app/api/snapshot/route.ts)).
+  - Metering by method and query shape, in cost units, logged every minute and in `/health` ([`core/src/meter.ts`](../backend/core/src/meter.ts)); warnings at 80% and 95% from `Arkiv-Quota-Used-Percent`.
+  - One access key per service (worker-1, worker-2, frontend).
 - **Suggestion:**
-  - A usage warning at 80% and 95% of the cap (Hub and email).
-  - A remaining-quota response header, so clients can back off before they fail.
-  - Document the cost-unit price of each RPC method, so builders can budget polling. An expiry event ([F12](#f12--no-expiration-event-expiry-has-to-be-detected-by-sweeping)) would remove most of the polling.
+  - Usage warnings at 80% and 95% of the cap, in the Hub and by email.
+  - Document `Arkiv-Quota-Used-Percent`, `Arkiv-Cost` and `RateLimit` (they exist but appear nowhere in the docs), and send `Retry-After` on `QUOTA_EXCEEDED` too.
+  - Publish the unit cost per method (and whether response size ever matters), so builders can budget polling.
+  - A typed rate-limit error in the SDK (`RateLimitError` with `retryAfterMs` and `quotaUsedPercent`), instead of a generic `HttpRequestError`.
+  - An expiry event ([F12](#f12--no-expiration-event-expiry-has-to-be-detected-by-sweeping)), which would remove most of the remaining polling.

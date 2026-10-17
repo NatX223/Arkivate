@@ -30,7 +30,7 @@ export type Fire = (t: TriggerRecord, f: Firing) => Promise<void>;
 /**
  * The expiry engine. Arkiv emits no expiration event, so this keeps an index of every watched
  * entity's deadline and sweeps it against the head; WS `ExpiryExtended` / `EntityDeleted` /
- * `EntityCreated` keep the index fresh between 5-minute rebuilds.
+ * `EntityCreated` keep the index fresh between rebuilds.
  */
 export class ExpiryWatcher {
   private entries = new Map<Hex, Entry>();

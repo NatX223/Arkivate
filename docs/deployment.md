@@ -64,7 +64,7 @@ Why this shape:
 
 | Choice | Reason |
 |---|---|
-| Always-on VM | A worker holds a WebSocket subscription, a 10 s expiry sweep and 30 s pollers; it must never scale to zero. |
+| Always-on VM | A worker holds a WebSocket subscription, a 30 s expiry sweep and 30 s pollers; it must never scale to zero. |
 | One VM per wallet | Two processes with one key would race on nonces (`predictEntityKeys` is nonce-derived) and could double-fire. |
 | Two regions | The censorship-resistance story needs workers that fail independently. |
 | Job store on local disk (`/var/lib/arkivate`) | Survives restarts: expiries that happen while the worker is down are still caught, and pinned deadlines never move. |
