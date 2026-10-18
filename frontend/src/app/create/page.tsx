@@ -173,7 +173,6 @@ function validate(f: Form): { spec?: TriggerSpec; errors: string[] } {
 // ---- page ------------------------------------------------------------------------------------
 
 export default function CreatePage() {
-  const w = useWallet();
   const [f, setF] = useState<Form>(DEFAULT);
   const [open, setOpen] = useState(1);
   const [salt, setSalt] = useState<Hex>();
@@ -181,10 +180,6 @@ export default function CreatePage() {
   const set = (patch: Partial<Form>) => setF((x) => normalise({ ...x, ...patch }));
 
   useEffect(() => setSalt(randomSalt()), []);
-  // Default the trusted creator to the connected wallet, the common case for your own data.
-  useEffect(() => {
-    if (w.address) setF((x) => (x.createdBy ? x : { ...x, createdBy: w.address! }));
-  }, [w.address]);
   // Default the worker to the first one that's online.
   useEffect(() => {
     const pick = workers.data?.find((x) => x.health.state === "online") ?? workers.data?.find((x) => x.health.state === "no-endpoint");
@@ -458,7 +453,7 @@ function WatchStep({ f, set, next }: { f: Form; set(p: Partial<Form>): void; nex
           help="Trust on Arkiv is the creator address. Without it, anyone can write matching entities."
           error={addrBad ? "Must be a 0x address (40 hex characters)" : f.cond === "on_silence" && !f.createdBy.trim() ? "Silence needs a trusted creator" : undefined}
         >
-          <input className="input input-mono" value={f.createdBy} onChange={(e) => set({ createdBy: e.target.value })} placeholder="0x…" aria-invalid={addrBad} />
+          <input className="input input-mono" value={f.createdBy} onChange={(e) => set({ createdBy: e.target.value })} placeholder="0x" aria-invalid={addrBad} />
         </Field>
       )}
       <Continue onClick={next} disabled={!stepOk(f, 1)} />
