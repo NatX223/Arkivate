@@ -173,6 +173,7 @@ function validate(f: Form): { spec?: TriggerSpec; errors: string[] } {
 // ---- page ------------------------------------------------------------------------------------
 
 export default function CreatePage() {
+  const w = useWallet();
   const [f, setF] = useState<Form>(DEFAULT);
   const [open, setOpen] = useState(1);
   const [salt, setSalt] = useState<Hex>();
@@ -180,6 +181,22 @@ export default function CreatePage() {
   const set = (patch: Partial<Form>) => setF((x) => normalise({ ...x, ...patch }));
 
   useEffect(() => setSalt(randomSalt()), []);
+  // Silence requires a trusted creator, so default it to the connected wallet; drop that default
+  // again if the user switches to a condition where the creator is optional.
+  const autoCreator = useRef<string>(undefined);
+  useEffect(() => {
+    setF((x) => {
+      if (x.cond === "on_silence" && !x.createdBy && w.address) {
+        autoCreator.current = w.address;
+        return { ...x, createdBy: w.address };
+      }
+      if (x.cond !== "on_silence" && autoCreator.current && x.createdBy === autoCreator.current) {
+        autoCreator.current = undefined;
+        return { ...x, createdBy: "" };
+      }
+      return x;
+    });
+  }, [f.cond, w.address]);
   // Default the worker to the first one that's online.
   useEffect(() => {
     const pick = workers.data?.find((x) => x.health.state === "online") ?? workers.data?.find((x) => x.health.state === "no-endpoint");
