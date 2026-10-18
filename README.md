@@ -13,7 +13,7 @@ receipt for every reaction, so a skipped job can be proven.
 | **Demo video** | TODO: video link |
 | **License** | [MIT](LICENSE) |
 
-> Testnet only. All data is synthetic.
+> Testnet only.
 
 ## TL;DR
 
